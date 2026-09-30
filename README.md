@@ -14,6 +14,11 @@ Both run `async`, exit `0`, and never block Claude Code.
 
 ## Install
 
+> Users no longer need two commands. This adds marketplace and installs in one step:
+```bash
+/plugin install tts-companion --marketplace iamandroiduser/tts-companion
+```
+
 ```bash
 # 1. Add the marketplace and install the plugin
 claude plugin marketplace add iamandroiduser/<repo-name>
