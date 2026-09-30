@@ -53,7 +53,7 @@ trap '[[ -d "$tmp/bin.old" && ! -e "$ROOT/bin" ]] && mv "$tmp/bin.old" "$ROOT/bi
 piper_release_bin() {
   local b="$1" e
   [[ -x "$b/piper" && -d "$b/espeak-ng-data" ]] || return 1
-  for e in "$b"/* "$b"/.[!.]*; do
+  for e in "$b"/* "$b"/.[!.]* "$b"/..?*; do      # every entry, dotfiles included
     [[ -e "$e" || -L "$e" ]] || continue
     case "${e##*/}" in
       piper|piper_phonemize|espeak-ng|espeak-ng-data|pkgconfig|libtashkeel_model.ort) ;;

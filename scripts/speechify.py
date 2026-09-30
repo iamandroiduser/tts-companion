@@ -314,11 +314,61 @@ def end_sentence(s):
     return s
 
 
+FENCE_RE = re.compile(r"^(```+|~~~+)\s*([\w+#.-]*)")
+QUOTE_RE = re.compile(r"^\s*(?:>\s?)+")
+
+
+def unquote(line):
+    """A line without its blockquote markers ("> > text" -> "text")."""
+    return QUOTE_RE.sub("", line, count=1)
+
+
+def fence_end(lines, i):
+    """(end of body, next line) for the fenced block opening at lines[i], also inside a quote."""
+    quoted = lines[i].lstrip().startswith(">")
+    mark = FENCE_RE.match(unquote(lines[i]).strip()).group(1)
+    closing = re.compile(rf"^{re.escape(mark[0])}{{{len(mark)},}}\s*$")
+    j = i + 1
+    while j < len(lines):
+        if quoted and not lines[j].lstrip().startswith(">"):
+            return j, j                                   # the quote ended, and the block with it
+        if closing.match(unquote(lines[j]).strip() if quoted else lines[j].strip()):
+            return j, j + 1
+        j += 1
+    return j, j
+
+
+def strip_comments(md):
+    """Remove HTML comments (multi-line or unclosed ones too) from prose only: a
+    `<!--` inside fenced or inline code is code, not the start of a comment."""
+    lines, out, prose, i = md.split("\n"), [], [], 0
+
+    def flush():
+        if prose:
+            code = []
+            text = re.sub(r"(`+)(?!`).+?(?<!`)\1(?!`)",
+                          lambda m: code.append(m.group(0)) or f"\x02{len(code) - 1}\x02", "\n".join(prose))
+            text = re.sub(r"<!--.*?(?:-->|$)", "", text, flags=re.S)
+            out.append(re.sub(r"\x02(\d+)\x02", lambda m: code[int(m.group(1))], text))
+            prose.clear()
+    while i < len(lines):
+        if FENCE_RE.match(unquote(lines[i]).strip()):
+            flush()
+            _, j = fence_end(lines, i)
+            out.extend(lines[i:j])
+            i = j
+        else:
+            prose.append(lines[i])
+            i += 1
+    flush()
+    return "\n".join(out)
+
+
 def speechify(md, blocks=None):
     """Return speakable text. If `blocks` is a list, hard blocks are appended to it
     and left in the text as placeholders for resolve_blocks()."""
     out = []
-    md = re.sub(r"<!--.*?(?:-->|$)", "", md.replace("\r\n", "\n"), flags=re.S)  # incl. multi-line / unclosed
+    md = strip_comments(md.replace("\r\n", "\n"))
     lines = md.split("\n")
     i = 0
 
@@ -369,16 +419,12 @@ def speechify(md, blocks=None):
             else:
                 cue("Code block on screen.", "code (unknown language)", body)
             continue
-        fence = re.match(r"^(```+|~~~+)\s*([\w+#.-]*)", t)
-        if fence:                                         # fenced block
-            mark, lang = fence.group(1), fence.group(2).lower()
-            body = []
-            i += 1
-            closing = re.compile(rf"^{re.escape(mark[0])}{{{len(mark)},}}\s*$")
-            while i < len(lines) and not closing.match(lines[i].strip()):
-                body.append(lines[i])
-                i += 1
-            i += 1
+        fence = FENCE_RE.match(unquote(t).strip())
+        if fence:                                         # fenced block (also inside a > quote)
+            lang = fence.group(2).lower()
+            end, nxt = fence_end(lines, i)
+            body = [unquote(b) if t.startswith(">") else b for b in lines[i + 1:end]]
+            i = nxt
             text = " ".join(b.strip() for b in body).strip()
             if lang in MATH_LANGS and len(text) <= 150:
                 emit(end_sentence(speak_math(text)))
