@@ -167,6 +167,7 @@ def speak_math(s):
            (">", " greater than "), ("%", " percent ")]
     for k, v in ops:
         s = s.replace(k, v)
+    s = re.sub(r"(?<=[\w)])-(?=[\w(])", " minus ", s)                # x-y (math only)
     s = re.sub(r"(?<![A-Za-z])-(?=\s*[\w(])|\s-\s", " minus ", s)
     s = re.sub(r"[{}()\[\]|,]", " ", s)
     s = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", s)          # 2x -> 2 x
@@ -184,7 +185,7 @@ def speak_math(s):
     return clean_ws(s)
 
 
-EQ_TOKEN = r"[A-Za-z0-9.]{1,4}(?:\^-?[A-Za-z0-9]+)?"
+EQ_TOKEN = r"(?:[A-Za-z][A-Za-z0-9]{0,3}|\d[\d.,]*|\.\d+)(?:\^-?[A-Za-z0-9]+)?"   # short names, any number
 EQ_OP = r"\s*(?:<=|>=|!=|==|=|\+|-|\*|/|\^|×|·|÷|≈|≤|≥|≠)\s*"
 PLAIN_EQ_RE = re.compile(
     rf"(?<![\w/.=-])((?:\(?{EQ_TOKEN}\)?{EQ_OP})*\(?{EQ_TOKEN}\)?\s*(?:=|≈|≤|≥|≠)\s*"
@@ -229,7 +230,9 @@ def speak_code(code):
 
 
 # ------------------------------------------------------------ inline pass
-def speak_inline(line):
+def speak_inline(line, hard=None):
+    """Speak one line or paragraph. `hard(kind, content, cue)` turns something too
+    long to read (a long inline equation) into a smart-speech block placeholder."""
     s = line
     s = re.sub(r"!\[([^\]]*)\]\([^)]*\)", lambda m: f"image, {m.group(1)}" if m.group(1) else "image", s)
     s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)                     # links -> text
@@ -242,9 +245,13 @@ def speak_inline(line):
         keep.append(text)
         return f"\x00{len(keep) - 1}\x00"
     s = re.sub(r"``\s?(.+?)\s?``|`([^`\n]+)`", lambda m: stash(speak_code(m.group(1) or m.group(2))), s)
-    s = re.sub(r"\$\$(.+?)\$\$|\\\[(.+?)\\\]",                          # display math mid-line
-               lambda m: stash(speak_math(m.group(1) or m.group(2))
-                               if len(m.group(1) or m.group(2)) <= 150 else "an equation, shown on screen"), s)
+    def display_math(m):
+        body = m.group(1) or m.group(2)
+        if len(body) <= 150:
+            return stash(speak_math(body))
+        cue_text = "an equation, shown on screen"
+        return stash(hard("equation", body, cue_text) if hard else cue_text)
+    s = re.sub(r"\$\$(.+?)\$\$|\\\[(.+?)\\\]", display_math, s)       # display math mid-line
     s = re.sub(r"\\\((.+?)\\\)", lambda m: stash(speak_math(m.group(1))), s)
     s = re.sub(r"(?<![\\$\w])\$(?=[^\s$])([^$\n]+?)(?<=[^\s$\\])\$(?![\w$])",
                lambda m: stash(speak_math(m.group(1))) if not re.fullmatch(r"[\d.,]+", m.group(1)) else m.group(0), s)
@@ -266,6 +273,7 @@ def speak_inline(line):
     for k, v in SYMBOLS.items():
         s = s.replace(k, v)
     s = re.sub(r"\s->\s|\s=>\s", " to ", s)
+    s = re.sub(r"(?<=\w)\s+=\s+(?=\w)", " equals ", s)                    # distance = 300000
     s = re.sub(r"(?<=[\w)])\s*<=\s*(?=[\w(])", " less than or equal to ", s)   # comparisons in prose
     s = re.sub(r"(?<=[\w)])\s*>=\s*(?=[\w(])", " greater than or equal to ", s)
     s = re.sub(r"(?<=[\w)])\s+<\s+(?=[\w(])", " less than ", s)
@@ -303,7 +311,27 @@ def speechify(md, blocks=None):
     lines = md.split("\n")
     i = 0
 
+    para = []
+
+    def hard(kind, content, cue_text):
+        if blocks is None:
+            return cue_text
+        blocks.append({"kind": kind, "cue": cue_text, "content": content.strip()})
+        return f"\x01{len(blocks) - 1}\x01"
+
+    def flush():
+        if para:
+            spoken = speak_inline(" ".join(para), hard)
+            if re.search(r"\w", spoken):                # nothing but punctuation: skip
+                out.append(end_sentence(spoken))
+            para.clear()
+
+    def emit(text):
+        flush()
+        out.append(text)
+
     def cue(text, kind=None, body=None):
+        flush()
         if blocks is not None and kind:
             blocks.append({"kind": kind, "cue": text, "content": "\n".join(body).strip()})
             out.append(f"\x01{len(blocks) - 1}\x01")
@@ -324,10 +352,10 @@ def speechify(md, blocks=None):
             i += 1
             text = " ".join(b.strip() for b in body).strip()
             if lang in MATH_LANGS and len(text) <= 150:
-                out.append(end_sentence(speak_math(text)))
+                emit(end_sentence(speak_math(text)))
             elif lang in MATH_LANGS:
                 cue("Equation on screen.", "equation", body)
-            elif lang in DIAGRAM_LANGS or (body and sum(map(is_diagram_line, body)) >= len(body) / 2):
+            elif lang in DIAGRAM_LANGS or (not lang and body and sum(map(is_diagram_line, body)) >= len(body) / 2):
                 cue("Diagram on screen.", f"diagram ({lang or 'text'})", body)
             else:
                 name = LANG_NAMES.get(lang)
@@ -342,7 +370,7 @@ def speechify(md, blocks=None):
             i += 1
             text = " ".join(body).replace("$$", "").strip()
             if len(text) <= 150:
-                out.append(end_sentence(speak_math(text)))
+                emit(end_sentence(speak_math(text)))
             else:
                 cue("Equation on screen.", "equation", [text])
             continue
@@ -371,12 +399,17 @@ def speechify(md, blocks=None):
             # a single symbol-heavy line such as "a -> b" is ordinary text: speak it
         i += 1
         if not t or re.fullmatch(r"[-*_=]{3,}", t) or t.startswith("<!--"):
+            flush()                                        # paragraph break
             continue
+        heading = re.match(r"^#{1,6}\s", t)
+        if heading or re.match(r"^([-*+]|\d+[.)])\s", t):  # a heading or list item starts anew
+            flush()
         t = re.sub(r"^(#{1,6}|>+)\s*", "", t)             # heading / quote
         t = re.sub(r"^([-*+]|\d+[.)])\s+(\[[ xX]\]\s*)?", "", t)  # list item / checkbox
-        spoken = speak_inline(t)
-        if re.search(r"\w", spoken):                       # nothing but punctuation: skip
-            out.append(end_sentence(spoken))
+        para.append(t)                                     # soft-wrapped lines join
+        if heading:
+            flush()
+    flush()
     return clean_ws(" ".join(out))
 
 

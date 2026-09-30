@@ -60,5 +60,14 @@ if command -v setsid >/dev/null; then
 else
   nohup bash "$HERE/bootstrap.sh" --worker </dev/null >>"$log" 2>&1 &
 fi
-echo "$!" > "$lock/pid"     # the worker owns the lock from here (it rewrites the same pid)
+# Hand the lock to the worker: it writes its own pid first thing. Stay alive (so
+# the lock never looks abandoned) until it has done so, or has already finished
+# and released it; never write to the lock ourselves after that point.
+worker=$!
+for _ in {1..100}; do
+  owner=$(cat "$lock/pid" 2>/dev/null) || break          # released already
+  [[ "$owner" == "$worker" ]] && break
+  kill -0 "$worker" 2>/dev/null || break
+  sleep 0.02
+done
 exit 0

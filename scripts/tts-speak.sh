@@ -148,9 +148,11 @@ speak_piper() {
       | aplay -q -r "${rate:-22050}" -f S16_LE -c 1 -t raw - 2>/dev/null
     local st=("${PIPESTATUS[@]}")
     (( st[1] == 0 && st[2] == 0 )) && return 0
-    (( st[1] != 0 )) && return 1                      # piper itself failed
-    debug "aplay could not play; rendering a WAV for the other players"
-    local SKIP_APLAY=1
+    # When aplay can't open the device, piper also fails (broken pipe), so any
+    # failure retries through a WAV; a real piper failure fails that too.
+    debug "streaming playback failed; rendering a WAV for the other players"
+    local SKIP_APLAY=0
+    (( st[2] != 0 )) && SKIP_APLAY=1
   fi
   f="$TMP"
   printf '%s' "$text" | "$piper" --model "$model" --output_file "$f.wav" >/dev/null 2>&1 \
