@@ -625,15 +625,21 @@ def audible_blocks(text, blocks, limit):
     a little earlier; those extra blocks are then simply not spoken."""
     if limit <= 0:
         return list(range(len(blocks)))
-    pieces, starts, pos = [], {}, 0
+    pieces, starts, pos, length = [], {}, 0, 0
     for m in re.finditer(r"\x01(\d+)\x01", text):
+        if length > limit:                 # nothing from here on can be heard
+            break
         pieces.append(text[pos:m.start()])
+        length += len(pieces[-1])
         n = int(m.group(1))
-        starts[n] = sum(map(len, pieces))
+        starts[n] = length
         pieces.append(blocks[n]["cue"])
+        length += len(pieces[-1])
         pos = m.end()
-    pieces.append(text[pos:])
-    resolved = "".join(pieces)
+    else:
+        pieces.append(text[pos:])
+    # Only the first limit + 1 characters decide where truncate() cuts.
+    resolved = "".join(pieces)[:limit + 1]
     cut = truncate(resolved, limit)
     kept = len(cut) - (len(TRUNCATION_NOTE) if cut != resolved else 0)
     return [n for n in sorted(starts) if starts[n] < kept]

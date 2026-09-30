@@ -80,7 +80,11 @@ piper_release_bin() {
 }
 piper_owned_bin() {
   local b="$ROOT/bin"
-  [[ ! -e "$b" ]] || [[ -z "$(ls -A "$b")" ]] || piper_release_bin "$b"
+  local listing
+  [[ ! -e "$b" && ! -L "$b" ]] && return 0
+  # A directory we can't list could hold anything: never treat it as empty.
+  [[ -d "$b" && -r "$b" && -x "$b" ]] && listing=$(ls -A "$b") || return 1
+  [[ -z "$listing" ]] || piper_release_bin "$b"
 }
 if [[ "$FORCE" == 1 || ! -x "$ROOT/bin/piper" ]]; then
   piper_owned_bin || die "$ROOT/bin is not a Piper install made by this plugin; set PIPER_ROOT to a dedicated directory"
