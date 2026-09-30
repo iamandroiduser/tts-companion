@@ -23,10 +23,11 @@ tts_load_config() {
   ENGINE="${ENGINE:-piper}"
   PIPER_VOICE="${PIPER_VOICE:-$TTS_DEFAULT_VOICE}"
   EDGE_VOICE="${EDGE_VOICE:-en-US-AriaNeural}"
-  MAX_CHARS="${MAX_CHARS:-400}"
+  MAX_CHARS="${MAX_CHARS:-1500}"
   SPEAK_REPLIES="${SPEAK_REPLIES:-1}"
   SPEAK_NOTIFICATIONS="${SPEAK_NOTIFICATIONS:-1}"
   AUTO_INSTALL="${AUTO_INSTALL:-1}"
+  STOP_ON_PROMPT="${STOP_ON_PROMPT:-1}"
 
   # Piper install dir: explicit PIPER_ROOT, else the first candidate that has the
   # binary, else the default. The plugin data dir is only a legacy candidate.
@@ -65,10 +66,40 @@ tts_write_conf_template() {
 #ENGINE=piper                     # piper | edge | say | espeak
 #PIPER_VOICE=$TTS_DEFAULT_VOICE
 #EDGE_VOICE=en-US-AriaNeural
-#MAX_CHARS=400                    # longer replies are cut at a word boundary
+#MAX_CHARS=1500                   # longer replies stop at a sentence end ("The rest is on screen"); 0 = no limit
 #SPEAK_REPLIES=1                  # speak each finished reply (Stop hook)
 #SPEAK_NOTIFICATIONS=1            # speak permission / idle alerts
+#STOP_ON_PROMPT=1                 # sending your next prompt stops the current speech
 #AUTO_INSTALL=1                   # 0 stops the background Piper download at session start
 #PIPER_ROOT=$TTS_DEFAULT_ROOT
 EOF
+}
+
+# ---- the speech currently playing (shared by tts-speak.sh and tts-ctl.sh) ----
+TTS_PIDFILE="${TMPDIR:-/tmp}/tts-companion-$(id -u).pid"
+
+tts_descendants() {
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null); do echo "$c"; tts_descendants "$c"; done
+}
+
+# Print the pid of the tts-speak.sh run that is speaking now, if any.
+tts_current_pid() {
+  local pid
+  pid=$(cat "$TTS_PIDFILE" 2>/dev/null) || return 1
+  [[ "$pid" =~ ^[0-9]+$ ]] && ps -p "$pid" -o args= 2>/dev/null | grep -q 'tts-speak' || return 1
+  echo "$pid"
+}
+
+# Send a signal to a speaking run and its engine/player processes.
+# The run is paused with SIGSTOP, so SIGCONT follows SIGTERM or it would never die.
+# shellcheck disable=SC2086  # $kids is a whitespace-separated pid list
+tts_signal() {
+  local sig="$1" pid="$2" kids
+  kids=$(tts_descendants "$pid")
+  case "$sig" in
+    TERM) kill -TERM "$pid" $kids 2>/dev/null; kill -CONT "$pid" $kids 2>/dev/null ;;
+    STOP) kill -STOP $kids "$pid" 2>/dev/null ;;   # players first, then the script
+    CONT) kill -CONT "$pid" $kids 2>/dev/null ;;
+  esac
 }

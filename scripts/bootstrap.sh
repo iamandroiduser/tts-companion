@@ -22,6 +22,14 @@ fi
 
 tts_write_conf_template 2>/dev/null
 
+# Keep a short `tts-companion` command (stop / pause / resume / toggle) on PATH
+# pointing at this plugin version. Only touches ~/.local/bin/tts-companion, and
+# never replaces a file there that this plugin didn't create.
+link="$HOME/.local/bin/tts-companion"
+if [[ -d "$HOME/.local/bin" ]] && { [[ ! -e "$link" && ! -L "$link" ]] || [[ "$(readlink "$link")" == */tts-ctl.sh ]]; }; then
+  ln -sfn "$HERE/tts-ctl.sh" "$link" 2>/dev/null
+fi
+
 [[ "$ENABLED" == "1" && "$AUTO_INSTALL" == "1" ]] || exit 0
 [[ "$ENGINE" == "piper" || "$ENGINE" == "edge" ]] || exit 0
 [[ "$(uname -s)" == "Linux" ]] || exit 0

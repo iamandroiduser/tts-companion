@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+"""tts-companion: turn a Markdown reply into text that makes sense when spoken.
+
+  * Things that can't be followed by ear (code blocks, tables, diagrams, long or
+    symbol-heavy snippets, URLs, emoji) are replaced by a short cue such as
+    "Code block on screen." or dropped.
+  * Things that can (short inline code, equations, chemical formulas, Greek
+    letters, math symbols) are read out: `std::vector<int>` -> "standard vector
+    of int", v = ir -> "v equals i r", CH4 -> "C H 4", E = mc^2 -> "E equals m c
+    squared".
+
+Usage: speechify.py [MAX_CHARS] < reply.md   (MAX_CHARS 0 = no limit)
+Standard library only.
+"""
+import re
+import sys
+
+# ---------------------------------------------------------------- word tables
+GREEK = {
+    "α": "alpha", "β": "beta", "γ": "gamma", "δ": "delta", "ε": "epsilon",
+    "ζ": "zeta", "η": "eta", "θ": "theta", "ι": "iota", "κ": "kappa",
+    "λ": "lambda", "μ": "mu", "ν": "nu", "ξ": "xi", "π": "pi", "ρ": "rho",
+    "σ": "sigma", "τ": "tau", "υ": "upsilon", "φ": "phi", "χ": "chi",
+    "ψ": "psi", "ω": "omega", "Γ": "Gamma", "Δ": "Delta", "Θ": "Theta",
+    "Λ": "Lambda", "Ξ": "Xi", "Π": "Pi", "Σ": "Sigma", "Φ": "Phi",
+    "Ψ": "Psi", "Ω": "Omega",
+}
+SYMBOLS = {
+    "→": " to ", "⟶": " to ", "←": " from ", "↔": " to and from ",
+    "⇒": " implies ", "⟹": " implies ", "⇔": " if and only if ",
+    "≈": " approximately ", "≠": " not equal to ", "≤": " less than or equal to ",
+    "≥": " greater than or equal to ", "±": " plus or minus ", "×": " times ",
+    "÷": " divided by ", "·": " times ", "√": " square root of ",
+    "∞": " infinity ", "°": " degrees ", "∑": " sum of ", "∏": " product of ",
+    "∫": " integral of ", "∂": " partial ", "∈": " in ", "∀": " for all ",
+    "∃": " there exists ", "∝": " proportional to ", "−": " minus ",
+    "…": "...", "–": " - ", "—": ", ", "&": " and ",
+}
+SUBSCRIPTS = str.maketrans("₀₁₂₃₄₅₆₇₈₉₊₋", "0123456789+-")
+SUPERSCRIPTS = {"²": "^2", "³": "^3", "¹": "^1", "⁰": "^0", "⁴": "^4", "⁵": "^5",
+                "⁶": "^6", "⁷": "^7", "⁸": "^8", "⁹": "^9", "ⁿ": "^n", "⁻¹": "^-1"}
+LATEX = {
+    "cdot": " times ", "times": " times ", "div": " divided by ", "pm": " plus or minus ",
+    "leq": " less than or equal to ", "le": " less than or equal to ",
+    "geq": " greater than or equal to ", "ge": " greater than or equal to ",
+    "neq": " not equal to ", "ne": " not equal to ", "approx": " approximately ",
+    "infty": " infinity ", "sum": " sum of ", "prod": " product of ",
+    "int": " integral of ", "partial": " partial ", "to": " to ",
+    "rightarrow": " to ", "Rightarrow": " implies ", "in": " in ", "cdots": " and so on ",
+    "ldots": " and so on ", "dots": " and so on ", "propto": " proportional to ",
+    "nabla": " del ", "degree": " degrees ",
+}
+# Function names and short words that must not be spelled out letter by letter.
+MATH_WORDS = {"sin", "cos", "tan", "log", "ln", "exp", "max", "min", "lim", "det",
+              "mod", "gcd", "lcm", "abs", "sec", "csc", "cot", "arg", "dim", "var",
+              "the", "and", "for", "is", "of", "to", "in", "on", "at", "or", "if",
+              "an", "be", "by", "we", "so", "it", "as", "no", "not", "sub", "all"}
+CODE_WORDS = {"std": "standard", "impl": "implementation", "args": "args",
+              "kwargs": "keyword args", "cfg": "config", "ctx": "context",
+              "env": "env", "fn": "function", "init": "init", "len": "length",
+              "str": "string", "stdin": "standard in", "stdout": "standard out",
+              "stderr": "standard error", "src": "source", "dir": "directory"}
+LANG_NAMES = {"py": "Python", "python": "Python", "js": "JavaScript",
+              "javascript": "JavaScript", "ts": "TypeScript", "typescript": "TypeScript",
+              "sh": "shell", "bash": "shell", "zsh": "shell", "shell": "shell",
+              "console": "shell", "cpp": "C plus plus", "c++": "C plus plus",
+              "c": "C", "rust": "Rust", "rs": "Rust", "go": "Go", "java": "Java",
+              "json": "JSON", "yaml": "YAML", "yml": "YAML", "toml": "TOML",
+              "sql": "SQL", "html": "HTML", "css": "CSS", "diff": "diff",
+              "ruby": "Ruby", "rb": "Ruby", "kotlin": "Kotlin", "swift": "Swift"}
+DIAGRAM_LANGS = {"mermaid", "dot", "graphviz", "plantuml", "ascii", "svg", "d2"}
+MATH_LANGS = {"math", "latex", "tex", "katex"}
+ELEMENTS = set("""H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn
+Fe Co Ni Cu Zn Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te I
+Xe Cs Ba La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta W Re Os Ir Pt Au Hg Tl
+Pb Bi Po At Rn Fr Ra Ac Th Pa U Np Pu Am Cm Bk Cf Es Fm Md No Lr""".split())
+
+BOX_CHARS = set("─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬━┃┏┓┗┛▲▼◀▶►◄█░▒▓╭╮╯╰")
+
+
+def clean_ws(s):
+    s = re.sub(r"\s+", " ", s).strip()
+    return re.sub(r"\s+([,.;:!?)])", r"\1", s)
+
+
+# ------------------------------------------------------------ chemistry
+CHEM_RE = re.compile(r"(?<![\w-])((?:[A-Z][a-z]?\d*){1,8})(?![\w-])")
+
+
+def speak_chem(token):
+    """CH4 -> 'C H 4'; returns None if token isn't a plausible formula."""
+    if not re.search(r"\d", token) or len(token) < 2:
+        return None
+    parts = re.findall(r"([A-Z][a-z]?)(\d*)", token)
+    if "".join(e + n for e, n in parts) != token:
+        return None
+    if not all(e in ELEMENTS for e, _ in parts):
+        return None
+    return " ".join(x for e, n in parts for x in (e, n) if x)
+
+
+# ------------------------------------------------------------ math
+def _power(m):
+    exp = m.group(1).strip()
+    return {"2": " squared ", "3": " cubed "}.get(exp, f" to the power of {exp} ")
+
+
+def speak_math(s):
+    """Read a short equation / LaTeX fragment aloud."""
+    for k, v in SUPERSCRIPTS.items():
+        s = s.replace(k, v)
+    s = s.translate(SUBSCRIPTS)
+    # LaTeX structures (innermost braces first, repeat for light nesting)
+    for _ in range(4):
+        s = re.sub(r"\\[dt]?frac\{([^{}]*)\}\{([^{}]*)\}", r" \1 over \2 ", s)
+        s = re.sub(r"\\sqrt\[([^\]]*)\]\{([^{}]*)\}", r" \1-th root of \2 ", s)
+        s = re.sub(r"\\sqrt\{([^{}]*)\}", r" square root of \1 ", s)
+        s = re.sub(r"\\(?:text|mathrm|mathbf|mathit|operatorname|vec|hat|bar)\{([^{}]*)\}", r" \1 ", s)
+    s = re.sub(r"\\(left|right|big|Big|bigg|Bigg|displaystyle|,|;|!|quad|qquad)", " ", s)
+    greek_names = {v.lower() for v in GREEK.values()} | {v for v in GREEK.values()}
+    s = re.sub(r"\\([A-Za-z]+)",
+               lambda m: LATEX.get(m.group(1), f" {m.group(1)} " if m.group(1) in greek_names else f" {m.group(1)} "), s)
+    s = re.sub(r"\^\{([^{}]*)\}", _power, s)
+    s = re.sub(r"\^\(([^()]*)\)", _power, s)
+    s = re.sub(r"\^(-?[A-Za-z0-9]+)", _power, s)
+    s = re.sub(r"_\{([^{}]*)\}", r" sub \1 ", s)
+    s = re.sub(r"(?<=[A-Za-z])_([A-Za-z0-9]+)", r" sub \1 ", s)
+    for k, v in {**SYMBOLS, **GREEK}.items():
+        s = s.replace(k, f" {v.strip()} " if k in GREEK else v)
+    ops = [("<=", " less than or equal to "), (">=", " greater than or equal to "),
+           ("!=", " not equal to "), ("==", " equals "), ("=", " equals "),
+           ("+", " plus "), ("*", " times "), ("/", " over "), ("<", " less than "),
+           (">", " greater than "), ("%", " percent ")]
+    for k, v in ops:
+        s = s.replace(k, v)
+    s = re.sub(r"(?<![A-Za-z])-(?=\s*[\w(])|\s-\s", " minus ", s)
+    s = re.sub(r"[{}()\[\]|,]", " ", s)
+    s = re.sub(r"(?<=\d)(?=[A-Za-z])", " ", s)          # 2x -> 2 x
+
+    def spell(m):
+        w = m.group(0)
+        if w.lower() in MATH_WORDS or w in greek_names or len(w) > 3 or w.lower() in {
+                "equals", "plus", "minus", "times", "over", "less", "than", "root",
+                "square", "squared", "cubed", "power", "percent", "infinity", "degrees",
+                "sum", "integral", "partial", "product", "approximately", "equal",
+                "greater", "or", "th", "del", "implies"}:
+            return w
+        return " ".join(w)                               # ir -> i r, mc -> m c
+    s = re.sub(r"\b[A-Za-z]{2,3}\b", spell, s)
+    return clean_ws(s)
+
+
+EQ_TOKEN = r"[A-Za-z0-9.]{1,4}(?:\^-?[A-Za-z0-9]+)?"
+EQ_OP = r"\s*(?:<=|>=|!=|==|=|\+|-|\*|/|\^|×|·|÷|≈|≤|≥|≠)\s*"
+PLAIN_EQ_RE = re.compile(
+    rf"(?<![\w/.=-])((?:\(?{EQ_TOKEN}\)?{EQ_OP})*\(?{EQ_TOKEN}\)?\s*(?:=|≈|≤|≥|≠)\s*"
+    rf"\(?{EQ_TOKEN}\)?(?:{EQ_OP}\(?{EQ_TOKEN}\)?)*)(?![\w/=-])")
+
+
+def looks_like_math(s):
+    return bool(re.search(r"[=^≈≤≥≠±×÷√∑∫]|\\[A-Za-z]", s)) and not re.search(
+        r"[A-Za-z_]{6,}|[;{}]\s*$|:=|=>|\bdef\b|\breturn\b|\bconst\b|\blet\b", s)
+
+
+# ------------------------------------------------------------ inline code
+def speak_code(code):
+    c = code.strip()
+    if not c:
+        return ""
+    chem = speak_chem(c)
+    if chem:
+        return chem
+    if len(c) <= 40 and looks_like_math(c) and not re.search(r"[\"']", c):
+        return speak_math(c)
+    symbols = sum(1 for ch in c if not (ch.isalnum() or ch in " ._:/-<>+#~$*()"))
+    if len(c) > 40 or symbols > 2 or c.count(" ") > 4:
+        return "code"
+    c = re.sub(r"^([A-Za-z_][\w.]*)=(?=\S)", r"\1 to ", c)       # KEY=value
+    c = re.sub(r"\bC\+\+", "C plus plus", c)
+    c = re.sub(r"\bC#", "C sharp", c)
+    c = re.sub(r"\(\s*\)$", "", c)                        # foo() -> foo
+    if "/" in c and " " not in c and not c.startswith("--"):
+        c = c.rstrip("/").split("/")[-1] or c                # path -> basename
+    c = c.replace("~", " home ").replace("$", "")
+    c = re.sub(r"^--", "dash dash ", c)
+    c = re.sub(r"^-(?=\w)", "dash ", c)
+    c = c.replace("::", " ").replace("->", " ").replace("=>", " ")
+    c = c.replace("<", " of ").replace(">", " ")
+    c = re.sub(r"(?<=\w)\.(?=\w)", " dot ", c)
+    c = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", c)            # camelCase -> camel Case
+    c = re.sub(r"[_\-]", " ", c)
+    c = re.sub(r"[^\w\s]", " ", c)
+    words = [CODE_WORDS.get(w.lower(), w) for w in c.split()]
+    return " ".join(words)
+
+
+# ------------------------------------------------------------ inline pass
+def speak_inline(line):
+    s = line
+    s = re.sub(r"!\[([^\]]*)\]\([^)]*\)", lambda m: f"image, {m.group(1)}" if m.group(1) else "image", s)
+    s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)                     # links -> text
+    s = re.sub(r"<https?://[^>]+>", " a link ", s)
+    # inline code / math, protected from later passes with placeholders
+    keep = []
+
+    def stash(text):
+        keep.append(text)
+        return f"\x00{len(keep) - 1}\x00"
+    s = re.sub(r"``\s?(.+?)\s?``|`([^`\n]+)`", lambda m: stash(speak_code(m.group(1) or m.group(2))), s)
+    s = re.sub(r"\\\((.+?)\\\)", lambda m: stash(speak_math(m.group(1))), s)
+    s = re.sub(r"(?<![\\$\w])\$(?=[^\s$])([^$\n]+?)(?<=[^\s$\\])\$(?![\w$])",
+               lambda m: stash(speak_math(m.group(1))) if not re.fullmatch(r"[\d.,]+", m.group(1)) else m.group(0), s)
+    s = re.sub(r"https?://\S+|www\.\S+", " a link ", s)
+    s = s.translate(SUBSCRIPTS)                                        # H₂O -> H2O
+    for k, v in SUPERSCRIPTS.items():                                  # 10⁴ -> 10^4
+        s = s.replace(k, v)
+    # emphasis / strikethrough markers
+    s = re.sub(r"(\*\*|__|~~)(?=\S)(.+?)(?<=\S)\1", r"\2", s)
+    s = re.sub(r"(?<![\w*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\w*])", r"\1", s)
+    s = re.sub(r"(?<![\w])_(?=\S)([^_\n]+?)(?<=\S)_(?![\w])", r"\1", s)
+    # prose equations and formulas
+    s = PLAIN_EQ_RE.sub(lambda m: stash(speak_math(m.group(1))), s)
+    s = CHEM_RE.sub(lambda m: speak_chem(m.group(1)) or m.group(1), s)
+    s = re.sub(r"\bC\+\+", "C plus plus", s)
+    s = re.sub(r"\b([CF])#", r"\1 sharp", s)
+    s = re.sub(r"\^(-?[A-Za-z0-9]+)", _power, s)                       # n^2 outside equations
+    for k, v in GREEK.items():
+        s = s.replace(k, f" {v} ")
+    for k, v in SYMBOLS.items():
+        s = s.replace(k, v)
+    s = re.sub(r"\s->\s|\s=>\s", " to ", s)
+    # Anything else that isn't a letter, digit or ordinary punctuation is noise
+    # (emoji, box-drawing, stray markup) and is dropped.
+    s = re.sub(r"[^\w\s.,;:!?'\"()%$/\-\x00]", " ", s)
+    s = re.sub(r"\x00(\d+)\x00", lambda m: keep[int(m.group(1))], s)
+    return clean_ws(s)
+
+
+# ------------------------------------------------------------ block pass
+def is_diagram_line(line):
+    t = line.strip()
+    if not t:
+        return False
+    if any(ch in BOX_CHARS for ch in t):
+        return True
+    alnum = sum(ch.isalnum() for ch in t)
+    return len(t) >= 4 and alnum / len(t) < 0.35 and not re.fullmatch(r"[-*_=]{3,}", t)
+
+
+def end_sentence(s):
+    s = s.rstrip()
+    if s and s[-1] not in ".!?:;,":
+        s += "."
+    return s
+
+
+def speechify(md):
+    out = []
+    lines = md.replace("\r\n", "\n").split("\n")
+    i = 0
+
+    def cue(text):
+        if not out or out[-1] != text:
+            out.append(text)
+    while i < len(lines):
+        line = lines[i]
+        t = line.strip()
+        fence = re.match(r"^(```+|~~~+)\s*([\w+#.-]*)", t)
+        if fence:                                         # fenced block
+            mark, lang = fence.group(1), fence.group(2).lower()
+            body = []
+            i += 1
+            while i < len(lines) and not lines[i].strip().startswith(mark[:3]):
+                body.append(lines[i])
+                i += 1
+            i += 1
+            text = " ".join(b.strip() for b in body).strip()
+            if lang in MATH_LANGS and len(text) <= 150:
+                out.append(end_sentence(speak_math(text)))
+            elif lang in DIAGRAM_LANGS or (body and sum(map(is_diagram_line, body)) >= len(body) / 2):
+                cue("Diagram on screen.")
+            else:
+                name = LANG_NAMES.get(lang)
+                cue(f"{name} code on screen." if name else "Code block on screen.")
+            continue
+        if t.startswith("$$"):                             # display math
+            body = [t[2:]]
+            while not body[-1].rstrip().endswith("$$") and i + 1 < len(lines):
+                i += 1
+                body.append(lines[i].strip())
+            i += 1
+            text = " ".join(body).replace("$$", "").strip()
+            out.append(end_sentence(speak_math(text)) if len(text) <= 150 else "Equation on screen.")
+            continue
+        if t.startswith("|"):                              # table
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                i += 1
+            cue("Table on screen.")
+            continue
+        if is_diagram_line(t):                             # ASCII / box diagram
+            start = i
+            while i < len(lines) and (is_diagram_line(lines[i]) or (
+                    lines[i].strip() and i + 1 < len(lines) and is_diagram_line(lines[i + 1]))):
+                i += 1
+            if i - start >= 2:
+                cue("Diagram on screen.")
+            if i == start:
+                i += 1
+            continue
+        i += 1
+        if not t or re.fullmatch(r"[-*_=]{3,}", t) or t.startswith("<!--"):
+            continue
+        t = re.sub(r"^(#{1,6}|>+)\s*", "", t)             # heading / quote
+        t = re.sub(r"^([-*+]|\d+[.)])\s+(\[[ xX]\]\s*)?", "", t)  # list item / checkbox
+        spoken = speak_inline(t)
+        if spoken:
+            out.append(end_sentence(spoken))
+    return clean_ws(" ".join(out))
+
+
+def truncate(text, limit):
+    """Cut at a sentence end within the limit and say so, instead of mid-sentence."""
+    if limit <= 0 or len(text) <= limit:
+        return text
+    cut = text[:limit]
+    ends = [m.end() for m in re.finditer(r"[.!?](?=\s)", cut + " ")]
+    good = [e for e in ends if e >= limit * 0.4]
+    cut = cut[:good[-1]] if good else cut.rsplit(" ", 1)[0]
+    return cut.rstrip() + " The rest is on screen."
+
+
+def main():
+    limit = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].lstrip("-").isdigit() else 0
+    md = sys.stdin.read()
+    sys.stdout.write(truncate(speechify(md), limit))
+
+
+if __name__ == "__main__":
+    main()

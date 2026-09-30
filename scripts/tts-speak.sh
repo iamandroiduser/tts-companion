@@ -20,33 +20,34 @@ case "$event" in
   *)            text=$(tts_json message <<<"$input") ;;
 esac
 
-# Make markdown speakable: drop code blocks, inline code, URLs, heading/quote/list
-# markers, emphasis and table pipes; flatten; cap length at a word boundary.
-text=$(awk 'BEGIN{c=0} /^[[:space:]]*```/{c=!c; next} !c{print}' <<<"$text" \
-  | sed -E -e 's/`[^`]*`//g' -e 's#https?://[^ )>]*# link #g' \
-           -e 's/^[[:space:]]*([#>]+|[-*+]|[0-9]+\.)[[:space:]]+//' \
-           -e 's/(\*\*|__|\*)//g' -e 's/\|/ /g' \
-  | tr '\n' ' ' | tr -s ' ')
-if (( ${#text} > MAX_CHARS )); then
-  text="${text:0:MAX_CHARS}"
-  text="${text% *}"
+# Make the reply speakable (scripts/speechify.py): code blocks, tables and
+# diagrams become a short "... on screen" cue; inline code, equations, chemical
+# formulas and symbols are read out in words; long replies stop at a sentence
+# end. Without python3, a simpler sed version drops code and keeps the words.
+if command -v python3 >/dev/null 2>&1; then
+  text=$(python3 "$(dirname "${BASH_SOURCE[0]}")/speechify.py" "$MAX_CHARS" <<<"$text")
+else
+  text=$(awk 'BEGIN{c=0} /^[[:space:]]*```/{if(!c)print "Code block on screen."; c=!c; next} !c{print}' <<<"$text" \
+    | sed -E -e 's/`([^`]*)`/\1/g' -e 's#https?://[^ )>]*# a link #g' \
+             -e 's/^[[:space:]]*([#>]+|[-*+]|[0-9]+\.)[[:space:]]+//' \
+             -e 's/(\*\*|__|\*)//g' -e 's/\|/ /g' -e 's/(::|_)/ /g' \
+    | tr '\n' ' ' | tr -s ' ')
+  if (( MAX_CHARS > 0 && ${#text} > MAX_CHARS )); then
+    text="${text:0:MAX_CHARS}"
+    text="${text% *}. The rest is on screen."
+  fi
 fi
 [[ -z "${text// /}" ]] && exit 0
 
 # Don't talk over ourselves: stop the previous run of *this* script (tracked by
 # pid file) and its players. Never pattern-match other users' processes.
-PIDFILE="${TMPDIR:-/tmp}/tts-companion-$(id -u).pid"
-descendants() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do echo "$c"; descendants "$c"; done; }
+PIDFILE="$TTS_PIDFILE"
 # Serialize the hand-off (not the speech) so two hooks firing at once can't both
 # miss each other; a lock left by a crashed run is taken over after ~1s.
 HANDOFF="$PIDFILE.lock"
 for _ in {1..20}; do mkdir "$HANDOFF" 2>/dev/null && break; sleep 0.05; done
-if old=$(cat "$PIDFILE" 2>/dev/null) && [[ "$old" =~ ^[0-9]+$ && "$old" != "$$" ]] \
-   && ps -p "$old" -o args= 2>/dev/null | grep -q 'tts-speak'; then
-  kids=$(descendants "$old")
-  kill "$old" 2>/dev/null
-  # shellcheck disable=SC2086
-  [[ -n "$kids" ]] && kill $kids 2>/dev/null
+if old=$(tts_current_pid) && [[ "$old" != "$$" ]]; then
+  tts_signal TERM "$old"
 fi
 echo "$$" > "$PIDFILE" 2>/dev/null
 rmdir "$HANDOFF" 2>/dev/null

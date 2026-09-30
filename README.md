@@ -55,7 +55,8 @@ Edit `~/.claude/tts.conf`:
 ENABLED=1                        # 0 mutes all speech
 ENGINE=piper                     # piper | edge | say | espeak
 PIPER_VOICE=en_GB-jenny_dioco-medium
-MAX_CHARS=400                    # longer replies are cut at a word boundary
+MAX_CHARS=1500                   # longer replies stop at a sentence end + "The rest is on screen"; 0 = no limit
+STOP_ON_PROMPT=1                 # sending your next prompt stops the current speech
 SPEAK_REPLIES=1                  # speak each finished reply
 SPEAK_NOTIFICATIONS=1            # speak permission / idle alerts
 AUTO_INSTALL=1                   # 0 disables the background download
@@ -67,6 +68,39 @@ configured voice.
 
 Engine fallback order: `piper` → `edge` → `say` (macOS) → `espeak-ng` /
 `espeak` / `spd-say`.
+
+## What gets read aloud
+
+Replies are rewritten for listening before they are spoken (`scripts/speechify.py`):
+
+| In the reply | Spoken as |
+|---|---|
+| Code blocks, tables, diagrams (Mermaid, ASCII / box drawings) | "Python code on screen.", "Table on screen.", "Diagram on screen." |
+| Long or symbol-heavy inline code, URLs, emoji | "code", "a link", dropped |
+| `std::vector<int>`, `getUserName()`, `scripts/tts-speak.sh` | "standard vector of int", "get User Name", "tts speak dot sh" |
+| `v = ir`, `E = mc^2`, `$\frac{1}{2}mv^2$` | "v equals i r", "E equals m c squared", "1 over 2 m v squared" |
+| CH4, H₂O, C6H12O6 | "C H 4", "H 2 O", "C 6 H 12 O 6" |
+| π, θ, ≤, ≈, →, x² | "pi", "theta", "less than or equal to", "approximately", "to", "x squared" |
+
+This needs `python3`; without it a simpler filter drops code blocks and keeps the words.
+
+## Stop, pause and resume
+
+- **Send your next prompt:** the current speech stops (`STOP_ON_PROMPT=1`).
+- **From a terminal**, or from Claude Code's `!` shell mode (`! tts-companion stop`):
+
+  ```bash
+  tts-companion stop      # stop the reply being read
+  tts-companion pause     # pause; resume continues where it paused
+  tts-companion resume
+  tts-companion toggle    # pause if playing, resume if paused
+  ```
+
+  The plugin keeps `~/.local/bin/tts-companion` pointing at its current version
+  (only when `~/.local/bin` exists and that name isn't taken by another file).
+- **A real button:** bind `~/.local/bin/tts-companion toggle` (and `stop`) to a
+  keyboard shortcut in your desktop's settings, e.g. GNOME: Settings → Keyboard →
+  Custom Shortcuts.
 
 ## Try different voices
 
@@ -112,10 +146,12 @@ python3 -m venv ~/.local/share/edge-tts
 |---|---|
 | `.claude-plugin/plugin.json` | Plugin manifest |
 | `.claude-plugin/marketplace.json` | Lets this repo be installed via `plugin marketplace add` |
-| `hooks/hooks.json` | SessionStart, Stop and Notification hook definitions |
+| `hooks/hooks.json` | SessionStart, UserPromptSubmit, Stop and Notification hook definitions |
 | `scripts/lib.sh` | Shared config and path resolution |
 | `scripts/bootstrap.sh` | SessionStart: background install of Piper and the voice |
-| `scripts/tts-speak.sh` | The hook handler (engine selection, text cleanup) |
+| `scripts/tts-speak.sh` | The hook handler (engine selection, playback) |
+| `scripts/speechify.py` | Rewrites Markdown into speakable text |
+| `scripts/tts-ctl.sh` | stop / pause / resume / toggle; also the UserPromptSubmit hook |
 | `scripts/install.sh` | Downloads the Piper binary and a voice |
 | `scripts/tts-try.sh` | Audition all installed voices |
 

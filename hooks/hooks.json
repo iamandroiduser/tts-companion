@@ -1,5 +1,5 @@
 {
-  "description": "Speak assistant replies (Stop) and attention alerts (Notification); install Piper on first session (SessionStart)",
+  "description": "Speak assistant replies (Stop) and attention alerts (Notification); stop speech when you send a prompt (UserPromptSubmit); install Piper on first session (SessionStart)",
   "hooks": {
     "SessionStart": [
       {
@@ -9,6 +9,17 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/bootstrap.sh\"",
             "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/tts-ctl.sh\" prompt-stop",
+            "timeout": 5
           }
         ]
       }
