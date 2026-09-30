@@ -114,11 +114,17 @@ else
   text=$(cat "$TMP.txt")
   if (( MAX_CHARS > 0 && ${#text} > MAX_CHARS )); then     # stop at a sentence end if one is close
     note=". The rest is on screen."
-    room=$(( MAX_CHARS > ${#note} ? MAX_CHARS - ${#note} : 1 ))   # the note counts toward the limit
-    cut="${text:0:room}"
-    sentence="${cut%[.!?] *}"
-    if (( ${#sentence} >= room * 2 / 5 && ${#sentence} < ${#cut} )); then cut="$sentence"; else cut="${cut% *}"; fi
-    text="$cut$note"
+    room=$(( MAX_CHARS - ${#note} ))            # the note counts toward the limit
+    if (( room < 20 )); then                    # too short for the note: just a bounded prefix
+      cut="${text:0:MAX_CHARS}"
+      [[ "$cut" == *" "* ]] && cut="${cut% *}"
+      text="$cut"
+    else
+      cut="${text:0:room}"
+      sentence="${cut%[.!?] *}"
+      if (( ${#sentence} >= room * 2 / 5 && ${#sentence} < ${#cut} )); then cut="$sentence"; else cut="${cut% *}"; fi
+      text="$cut$note"
+    fi
   fi
 fi
 [[ -z "${text// /}" ]] && exit 0
@@ -195,12 +201,15 @@ speak_edge() {
 
 speak_say() { have say && { debug "say"; say <<<"$text"; }; }
 
+# Try each installed engine until one works (one may exist but fail to reach
+# the sound device).
 speak_espeak() {
-  if   have espeak-ng; then debug "espeak-ng"; espeak-ng -s 165 <<<"$text" 2>/dev/null
-  elif have espeak;    then debug "espeak";    espeak -s 165 <<<"$text" 2>/dev/null
-  elif have spd-say;   then debug "spd-say";   spd-say -w -e <<<"$text" >/dev/null 2>&1
-  else debug "no speech engine found"; return 1
-  fi
+  local found=0
+  if have espeak-ng; then found=1; debug "espeak-ng"; espeak-ng -s 165 <<<"$text" 2>/dev/null && return 0; fi
+  if have espeak;    then found=1; debug "espeak";    espeak -s 165 <<<"$text" 2>/dev/null && return 0; fi
+  if have spd-say;   then found=1; debug "spd-say";   spd-say -w -e <<<"$text" >/dev/null 2>&1 && return 0; fi
+  (( found )) && debug "every speech engine failed" || debug "no speech engine found"
+  return 1
 }
 
 # A newer reply may have taken over, or speech was stopped, while the text was prepared.

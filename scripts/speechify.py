@@ -301,6 +301,13 @@ def speak_inline(line, hard=None):
 
 
 # ------------------------------------------------------------ block pass
+def is_table_row(line):
+    """A line that continues a table: it has a | and doesn't start a new block
+    (heading, quote, list item, fence), so text after the table stays prose."""
+    t = line.strip()
+    return bool(t) and "|" in t and not re.match(r"(#{1,6}\s|>|[-*+]\s|\d+[.)]\s|```|~~~)", t)
+
+
 def is_diagram_line(line):
     t = line.strip()
     if not t:
@@ -492,13 +499,13 @@ def speechify(md, blocks=None):
         if "|" in t and i + 1 < len(lines) and TABLE_DELIM_RE.match(lines[i + 1]):   # table
             start = i
             i += 2
-            while i < len(lines) and "|" in lines[i] and lines[i].strip():
+            while i < len(lines) and is_table_row(lines[i]):
                 i += 1
             cue("Table on screen.", "table", lines[start:i])
             continue
         if t.startswith("|") and t.endswith("|"):         # pipe rows without a delimiter row
             start = i
-            while i < len(lines) and lines[i].strip().startswith("|"):
+            while i < len(lines) and lines[i].strip().startswith("|") and is_table_row(lines[i]):
                 i += 1
             cue("Table on screen.", "table", lines[start:i])
             continue
@@ -541,7 +548,10 @@ def truncate(text, limit):
     """Cut at a sentence end within the limit and say so, instead of mid-sentence."""
     if limit <= 0 or len(text) <= limit:
         return text
-    room = max(1, limit - len(TRUNCATION_NOTE))     # the note counts toward the limit too
+    room = limit - len(TRUNCATION_NOTE)             # the note counts toward the limit too
+    if room < 20:                                   # too short for the note: just a bounded prefix
+        cut = text[:limit]
+        return (cut.rsplit(" ", 1)[0] if " " in cut and len(text) > limit else cut).rstrip()
     cut = text[:room]
     ends = [m.end() for m in re.finditer(r"[.!?](?=\s)", cut + " ")]
     good = [e for e in ends if e >= room * 0.4]
@@ -654,7 +664,7 @@ def audible_blocks(text, blocks, limit):
     # Only the first limit + 1 characters decide where truncate() cuts.
     resolved = "".join(pieces)[:limit + 1]
     cut = truncate(resolved, limit)
-    kept = len(cut) - (len(TRUNCATION_NOTE) if cut != resolved else 0)
+    kept = len(cut) - (len(TRUNCATION_NOTE) if cut != resolved and cut.endswith(TRUNCATION_NOTE) else 0)
     return [n for n in sorted(starts) if starts[n] < kept]
 
 

@@ -34,6 +34,10 @@ stop_all() {
 }
 
 cmd="${1:-toggle}"
+case "$cmd" in
+  prompt-stop|stop|pause|resume|toggle|status) ;;
+  *) echo "usage: $(basename "$0") stop|pause|resume|toggle|status" >&2; exit 2 ;;
+esac
 if [[ "$cmd" == "prompt-stop" ]]; then
   cat >/dev/null                       # drain the hook's JSON input
   [[ "$TTS_INNER" == 1 || -z "$TTS_STATE_DIR" ]] && exit 0
