@@ -148,13 +148,19 @@ Browse voices: <https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md
 Check which engine runs, the same way the hook runs it:
 
 ```bash
+dir=$(ls -d ~/.claude/plugins/cache/iamandroiduser-plugins/tts-companion/*/scripts | tail -1)
 echo '{"hook_event_name":"Stop","last_assistant_message":"It works"}' \
   | TTS_DEBUG=1 bash "$dir/tts-speak.sh"
 ```
 
 `TTS_DEBUG=1` prints each engine it tries and why it skipped it. If Piper is
 missing, check `~/.local/share/piper/install.log`. After a failed download, the
-plugin waits 6 hours before retrying; `bash "$dir/install.sh"` retries now.
+plugin waits 6 hours before retrying; to retry now:
+
+```bash
+dir=$(ls -d ~/.claude/plugins/cache/iamandroiduser-plugins/tts-companion/*/scripts | tail -1)
+bash "$dir/install.sh"
+```
 
 ## Optional: best-quality online voices (still free, still no API key)
 
