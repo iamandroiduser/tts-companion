@@ -51,6 +51,7 @@ cleanup() {
   # check and our delete (which would leave its speech untracked).
   if tts_lock "$HANDOFF" 40; then
     [[ "$(cat "$PIDFILE" 2>/dev/null)" == "$TTS_SELF" ]] && rm -f "$PIDFILE"
+    [[ "$(cat "$TTS_STATE_DIR/playing" 2>/dev/null)" == "$TTS_SELF" ]] && rm -f "$TTS_STATE_DIR/playing"
     tts_unlock "$HANDOFF"
   fi
 }
@@ -255,6 +256,7 @@ speak() {
     *)      speak_espeak || speak_say ;;
   esac
 }
+echo "$TTS_SELF" > "$TTS_STATE_DIR/playing" 2>/dev/null   # for `tts-companion status`
 speak &
 JOB=$!; wait_job
 exit 0

@@ -73,6 +73,8 @@ case "$cmd" in
   resume) tts_signal CONT "$pid"; echo "Resumed." ;;
   toggle) if paused; then tts_signal CONT "$pid"; echo "Resumed."
           else tts_signal STOP "$pid"; echo "Paused."; fi ;;
-  status) if paused; then echo "Paused."; else echo "Speaking."; fi ;;
+  status) if paused; then echo "Paused."
+          elif [[ "$(cat "$TTS_STATE_DIR/playing" 2>/dev/null)" == "$(cat "$TTS_PIDFILE" 2>/dev/null)" ]]; then echo "Speaking."
+          else echo "Preparing speech."; fi ;;   # text preparation or the smart-speech model call
   *)      echo "usage: $(basename "$0") stop|pause|resume|toggle|status" >&2; exit 2 ;;
 esac
