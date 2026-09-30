@@ -301,6 +301,14 @@ def speak_inline(line, hard=None):
 
 
 # ------------------------------------------------------------ block pass
+def table_cells(line):
+    """Number of cells in a table row: | separated, outer pipes optional, \\| escaped."""
+    t = line.strip()
+    t = t[1:] if t.startswith("|") else t
+    t = t[:-1] if t.endswith("|") and not t.endswith("\\|") else t
+    return len(re.split(r"(?<!\\)\|", t))
+
+
 def is_table_row(line):
     """A line that continues a table: it has a | and doesn't start a new block
     (heading, quote, list item, fence, HTML), so text after the table stays prose."""
@@ -532,9 +540,12 @@ def speechify(md, blocks=None):
         ut = unquote(t).strip() if quoted else t
         nxt = row(lines[i + 1]) if i + 1 < len(lines) else None
         if "|" in ut and nxt is not None and TABLE_DELIM_RE.match(nxt):   # table
-            start = i
+            start, cells = i, table_cells(ut)
             i += 2
-            while i < len(lines) and row(lines[i]) is not None and is_table_row(row(lines[i])):
+            # a row starts with | or has the header's number of cells: a sentence
+            # like "Use A | B to pick one." after the table stays prose
+            while i < len(lines) and row(lines[i]) is not None and is_table_row(row(lines[i])) and (
+                    row(lines[i]).strip().startswith("|") or table_cells(row(lines[i])) == cells):
                 i += 1
             cue("Table on screen.", "table", [row(l) for l in lines[start:i]])
             continue
