@@ -92,7 +92,8 @@ if command -v python3 >/dev/null 2>&1; then
   JOB=$!; wait_job
   text=$(cat "$TMP.txt")
 else
-  text=$(awk '{ t=$0; sub(/^[[:space:]]+/, "", t) }
+  prep_fallback() {
+    awk '{ t=$0; sub(/^[[:space:]]+/, "", t) }
              !f && match(t, /^(```+|~~~+)/) { f=substr(t,1,RLENGTH); print "Code block on screen."; next }
              f { c=t; sub(/[[:space:]]+$/, "", c)
                  if (substr(c,1,1) == substr(f,1,1) && c ~ /^(`+|~+)$/ && length(c) >= length(f)) f=""
@@ -101,7 +102,11 @@ else
     | sed -E -e 's/`([^`]*)`/\1/g' -e 's#https?://[^ )>]*# a link #g' \
              -e 's/^[[:space:]]*([#>]+|[-*+]|[0-9]+\.)[[:space:]]+//' \
              -e 's/(\*\*|__|\*)//g' -e 's/\|/ /g' -e 's/(::|_)/ /g' \
-    | tr '\n' ' ' | tr -s ' ')
+    | tr '\n' ' ' | tr -s ' '
+  }
+  prep_fallback >"$TMP.txt" &        # a background job, like the python3 branch: see wait_job
+  JOB=$!; wait_job
+  text=$(cat "$TMP.txt")
   if (( MAX_CHARS > 0 && ${#text} > MAX_CHARS )); then     # stop at a sentence end if one is close
     cut="${text:0:MAX_CHARS}"
     sentence="${cut%[.!?] *}"
@@ -184,11 +189,11 @@ speak_edge() {
 speak_say() { have say && { debug "say"; say <<<"$text"; }; }
 
 speak_espeak() {
-  if   have espeak-ng; then debug "espeak-ng"; espeak-ng -s 165 <<<"$text"
-  elif have espeak;    then debug "espeak";    espeak -s 165 <<<"$text"
-  elif have spd-say;   then debug "spd-say";   spd-say -w -e <<<"$text" >/dev/null
+  if   have espeak-ng; then debug "espeak-ng"; espeak-ng -s 165 <<<"$text" 2>/dev/null
+  elif have espeak;    then debug "espeak";    espeak -s 165 <<<"$text" 2>/dev/null
+  elif have spd-say;   then debug "spd-say";   spd-say -w -e <<<"$text" >/dev/null 2>&1
   else debug "no speech engine found"; return 1
-  fi 2>/dev/null
+  fi
 }
 
 # A newer reply may have taken over, or speech was stopped, while the text was prepared.

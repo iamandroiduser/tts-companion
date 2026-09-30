@@ -141,6 +141,11 @@ tts_cancelled() {
   now=$(tts_cancel_token)
   [[ "$now" != "$1" ]] && return 0                  # a stop since we first looked
   read -r ticks epoch _ <<<"$now"
+  # Wall clock first: a stop clearly older than this run (e.g. from before a
+  # reboot, when clock ticks started again from zero) never cancels it.
+  if [[ "$epoch" =~ ^[0-9]+$ && "$3" =~ ^[0-9]+$ ]] && (( epoch + 1 < $3 )); then
+    return 1
+  fi
   if [[ "$ticks" =~ ^[0-9]+$ && "$2" =~ ^[0-9]+$ ]]; then
     (( ticks >= $2 ))
   elif [[ "$epoch" =~ ^[0-9]+$ && "$3" =~ ^[0-9]+$ ]]; then
