@@ -87,15 +87,46 @@ EOF
 # ---- the speech currently playing (shared by tts-speak.sh and tts-ctl.sh) ----
 # Kept in a directory only this user can write (not a guessable path in a shared
 # /tmp, where another user could plant a symlink): $XDG_RUNTIME_DIR, else ~/.cache.
+# An existing directory is used only if it is a real directory (not a symlink)
+# owned by this user, and it is made private; otherwise TTS_STATE_DIR is empty
+# and speech / speech control stay off rather than write somewhere unsafe.
 TTS_STATE_DIR="${XDG_RUNTIME_DIR:-$HOME/.cache}/tts-companion"
-[[ -d "$TTS_STATE_DIR" ]] || { mkdir -p "${TTS_STATE_DIR%/*}" && mkdir -m 700 "$TTS_STATE_DIR"; } 2>/dev/null
-TTS_PIDFILE="$TTS_STATE_DIR/speaking.pid"
-# Changed by every stop (tts-companion stop, your next prompt). A speak run notes
-# it before reading its input and gives up if it changed, so a reply still being
-# read in when you stop it (or send your next prompt) can't start speaking later.
-TTS_CANCELFILE="$TTS_STATE_DIR/cancelled"
-tts_cancel_token() { cat "$TTS_CANCELFILE" 2>/dev/null; }
-tts_cancel_all() { echo "$(date +%s%N 2>/dev/null).$$.$RANDOM" > "$TTS_CANCELFILE" 2>/dev/null; }
+[[ -e "$TTS_STATE_DIR" || -L "$TTS_STATE_DIR" ]] \
+  || { mkdir -p "${TTS_STATE_DIR%/*}" && mkdir -m 700 "$TTS_STATE_DIR"; } 2>/dev/null
+if [[ -d "$TTS_STATE_DIR" && ! -L "$TTS_STATE_DIR" && -O "$TTS_STATE_DIR" ]] && chmod 700 "$TTS_STATE_DIR" 2>/dev/null; then
+  TTS_PIDFILE="$TTS_STATE_DIR/speaking.pid"
+  TTS_CANCELFILE="$TTS_STATE_DIR/cancelled"
+else
+  TTS_STATE_DIR="" TTS_PIDFILE="" TTS_CANCELFILE=""
+fi
+
+# tts_proc_start PID — when the process started, in clock ticks since boot (Linux).
+tts_proc_start() {
+  local s
+  s=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  s=${s##*) }                            # fields after "(command) ", from field 3
+  # shellcheck disable=SC2086
+  set -- $s
+  [[ "${20:-}" =~ ^[0-9]+$ ]] && echo "${20}"
+}
+# Every stop (tts-companion stop, your next prompt) rewrites the cancel file with
+# its own start time. A speak run gives up if a stop came after it was started:
+# on Linux by comparing process start times, which also covers a hook that
+# Claude Code had already launched but that hadn't run yet; elsewhere by noticing
+# that the file changed after the run first read it.
+tts_cancel_token() { [[ -n "$TTS_CANCELFILE" ]] && cat "$TTS_CANCELFILE" 2>/dev/null; }
+tts_cancel_all() {
+  [[ -n "$TTS_CANCELFILE" ]] || return 0
+  echo "$(tts_proc_start $$) $(date +%s%N 2>/dev/null).$$.$RANDOM" > "$TTS_CANCELFILE" 2>/dev/null
+}
+# tts_cancelled TOKEN_AT_START MY_START_TICKS
+tts_cancelled() {
+  local now stop_start
+  now=$(tts_cancel_token)
+  [[ "$now" != "$1" ]] && return 0                  # a stop since we first looked
+  stop_start=${now%% *}
+  [[ -n "$2" && "$stop_start" =~ ^[0-9]+$ ]] && (( stop_start >= $2 ))   # one since we were started
+}
 
 # tts_lock DIR [TRIES] [STALE_MIN] — take a mkdir lock recording our pid, retrying
 # every 50 ms. A lock is taken over only when its recorded owner is dead (or it has

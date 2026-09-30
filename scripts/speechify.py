@@ -249,6 +249,8 @@ def speak_inline(line, hard=None):
     def stash(text):
         keep.append(text)
         return f"\x00{len(keep) - 1}\x00"
+    s = re.sub(r"<code\b[^>]*>(.*?)</code\s*>",                        # <code>x</code> reads like `x`
+               lambda m: stash(speak_code(html.unescape(re.sub(r"<[^>]+>", "", m.group(1))))), s, flags=re.I)
     s = re.sub(r"``\s?(.+?)\s?``|`([^`\n]+)`",
                lambda m: stash(speak_code(html.unescape(m.group(1) or m.group(2)))), s)
     s = re.sub(r"!\[([^\]]*)\]\([^)]*\)", lambda m: f"image, {m.group(1)}" if m.group(1) else "image", s)
@@ -427,6 +429,22 @@ def speechify(md, blocks=None):
                 cue("Diagram on screen.", "diagram (text art)", body)
             else:
                 cue("Code block on screen.", "code (unknown language)", body)
+            continue
+        html_code = re.match(r"<(pre|code)\b[^>]*>", t, re.I)
+        if html_code and (html_code.group(1).lower() == "pre"      # raw HTML code block
+                          or not re.search(r"</code\s*>", t, re.I)):
+            close = re.compile(rf"</{html_code.group(1)}\s*>", re.I)
+            end = i
+            while end < len(lines) and not close.search(lines[end]):
+                end += 1
+            raw = "\n".join(lines[i:end + 1])
+            i = end + 1
+            lang = re.search(r"\bclass=[\"']?(?:language|lang)-([\w+#.-]+)", raw, re.I)
+            lang = lang.group(1).lower() if lang else ""
+            body = html.unescape(re.sub(r"</?(?:pre|code)\b[^>]*>", "", raw, flags=re.I)).strip("\n").split("\n")
+            name = LANG_NAMES.get(lang)
+            cue(f"{name} code on screen." if name else "Code block on screen.",
+                f"code ({lang or 'unknown language'})", body)
             continue
         fence = FENCE_RE.match(unquote(t).strip())
         if fence:                                         # fenced block (also inside a > quote)

@@ -13,7 +13,9 @@ tts_load_config
 
 debug() { [[ "${TTS_DEBUG:-0}" == "1" ]] && echo "tts-companion: $*" >&2; return 0; }
 
-CANCEL_TOKEN=$(tts_cancel_token)   # before reading the input: see tts_cancel_all
+[[ -n "$TTS_STATE_DIR" ]] || exit 0   # no safe private state dir (see lib.sh)
+MY_START=$(tts_proc_start $$)        # before reading the input: see tts_cancel_all
+CANCEL_TOKEN=$(tts_cancel_token)
 input=$(cat)
 event=$(tts_json hook_event_name <<<"$input")
 case "$event" in
@@ -67,7 +69,7 @@ wait_job() { while :; do wait "$JOB"; kill -0 "$JOB" 2>/dev/null || break; sleep
 # a short lock (not held while speaking) so two hooks firing at once can't both
 # miss each other.
 tts_lock "$HANDOFF" 100 || { debug "hand-off lock busy; not speaking"; exit 0; }
-if [[ "$(tts_cancel_token)" != "$CANCEL_TOKEN" ]]; then   # stopped while we were starting
+if tts_cancelled "$CANCEL_TOKEN" "$MY_START"; then   # stopped while we were starting
   tts_unlock "$HANDOFF"; debug "stopped before speaking"; exit 0
 fi
 if old=$(tts_current_pid) && [[ "$old" != "$$" ]]; then
@@ -189,7 +191,7 @@ speak_espeak() {
 }
 
 # A newer reply may have taken over, or speech was stopped, while the text was prepared.
-[[ "$(cat "$PIDFILE" 2>/dev/null)" == "$$" && "$(tts_cancel_token)" == "$CANCEL_TOKEN" ]] || exit 0
+[[ "$(cat "$PIDFILE" 2>/dev/null)" == "$$" ]] && ! tts_cancelled "$CANCEL_TOKEN" "$MY_START" || exit 0
 
 speak() {
   case "$ENGINE" in

@@ -30,11 +30,15 @@ stop_all() {
 cmd="${1:-toggle}"
 if [[ "$cmd" == "prompt-stop" ]]; then
   cat >/dev/null                       # drain the hook's JSON input
-  [[ "$TTS_INNER" == 1 ]] && exit 0
+  [[ "$TTS_INNER" == 1 || -z "$TTS_STATE_DIR" ]] && exit 0
   [[ "$STOP_ON_PROMPT" == "1" ]] && stop_all
   exit 0
 fi
 
+if [[ -z "$TTS_STATE_DIR" ]]; then
+  echo "tts-companion: ${XDG_RUNTIME_DIR:-$HOME/.cache}/tts-companion is not a private directory owned by you; not touching it." >&2
+  exit 1
+fi
 if [[ "$cmd" == "stop" ]]; then
   if stop_all; then echo "Stopped."; else echo "Nothing is being spoken."; fi
   exit 0

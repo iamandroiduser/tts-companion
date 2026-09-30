@@ -41,11 +41,18 @@ if [[ "${TTS_INSTALL_LOCKED:-0}" != 1 ]]; then
   tts_lock "$lock" 12000 5 || die "another install is still running (see $ROOT/install.log)"
 fi
 tmp=$(mktemp -d "$ROOT/.install.XXXXXX")
-restore_voice() {   # a replaced voice pair that didn't land completely: put the old one back
-  [[ -d "$tmp/voice.old" && -n "$(ls -A "$tmp/voice.old")" ]] || return 0
-  [[ -f "$ROOT/$VOICE.onnx" && -f "$ROOT/$VOICE.onnx.json" ]] && return 0
-  rm -f "$ROOT/$VOICE.onnx" "$ROOT/$VOICE.onnx.json"
-  mv "$tmp/voice.old/"* "$ROOT/"
+# A voice swap that didn't finish: undo exactly what happened, going by where the
+# files are. A new file no longer in $tmp has landed (remove it); an old file in
+# voice.old was parked (put it back); an old file never parked was never touched.
+restore_voice() {
+  local f
+  [[ -d "$tmp/voice.old" ]] || return 0                       # no swap started
+  [[ ! -e "$tmp/$VOICE.onnx" && ! -e "$tmp/$VOICE.onnx.json" ]] && return 0   # it completed
+  for f in "$VOICE.onnx" "$VOICE.onnx.json"; do
+    [[ -e "$tmp/$f" ]] || rm -f "$ROOT/$f"
+    [[ -e "$tmp/voice.old/$f" ]] && mv -f "$tmp/voice.old/$f" "$ROOT/$f"
+  done
+  return 0
 }
 # On any exit, an old bin/ still parked in $tmp means the new one never landed: put it back.
 trap '[[ -d "$tmp/bin.old" && ! -e "$ROOT/bin" ]] && mv "$tmp/bin.old" "$ROOT/bin"
