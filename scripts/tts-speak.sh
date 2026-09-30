@@ -13,6 +13,7 @@ tts_load_config
 
 debug() { [[ "${TTS_DEBUG:-0}" == "1" ]] && echo "tts-companion: $*" >&2; return 0; }
 
+CANCEL_TOKEN=$(tts_cancel_token)   # before reading the input: see tts_cancel_all
 input=$(cat)
 event=$(tts_json hook_event_name <<<"$input")
 case "$event" in
@@ -44,7 +45,10 @@ cleanup() {
 }
 on_term() {
   tts_unlock "$HANDOFF"
-  [[ -n "${JOB:-}" ]] && kill -TERM -- "-$JOB" 2>/dev/null   # the job's whole process group
+  # Every background job's whole process group, including one launched just now
+  # whose pid isn't in $JOB yet.
+  local j
+  for j in $(jobs -p); do kill -TERM -- "-$j" 2>/dev/null; done
   # shellcheck disable=SC2046
   kill $(tts_descendants $$) 2>/dev/null
   exit 0
@@ -63,6 +67,9 @@ wait_job() { while :; do wait "$JOB"; kill -0 "$JOB" 2>/dev/null || break; sleep
 # a short lock (not held while speaking) so two hooks firing at once can't both
 # miss each other.
 tts_lock "$HANDOFF" 100 || { debug "hand-off lock busy; not speaking"; exit 0; }
+if [[ "$(tts_cancel_token)" != "$CANCEL_TOKEN" ]]; then   # stopped while we were starting
+  tts_unlock "$HANDOFF"; debug "stopped before speaking"; exit 0
+fi
 if old=$(tts_current_pid) && [[ "$old" != "$$" ]]; then
   tts_signal TERM "$old"
 fi
@@ -181,8 +188,8 @@ speak_espeak() {
   fi 2>/dev/null
 }
 
-# A newer reply may have taken over while the text was being prepared.
-[[ "$(cat "$PIDFILE" 2>/dev/null)" == "$$" ]] || exit 0
+# A newer reply may have taken over, or speech was stopped, while the text was prepared.
+[[ "$(cat "$PIDFILE" 2>/dev/null)" == "$$" && "$(tts_cancel_token)" == "$CANCEL_TOKEN" ]] || exit 0
 
 speak() {
   case "$ENGINE" in

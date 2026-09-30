@@ -16,19 +16,33 @@ done
 source "$(dirname "$self")/lib.sh" || exit 0
 tts_load_config
 
+# Stop what is playing and cancel replies still being prepared. Done under the
+# speak hand-off lock, so a run can't register itself between the two steps.
+stop_all() {
+  local locked=0 pid
+  tts_lock "$TTS_PIDFILE.lock" 40 && locked=1
+  tts_cancel_all
+  pid=$(tts_current_pid) && tts_signal TERM "$pid"
+  (( locked )) && tts_unlock "$TTS_PIDFILE.lock"
+  [[ -n "$pid" ]]
+}
+
 cmd="${1:-toggle}"
 if [[ "$cmd" == "prompt-stop" ]]; then
   cat >/dev/null                       # drain the hook's JSON input
   [[ "$TTS_INNER" == 1 ]] && exit 0
-  [[ "$STOP_ON_PROMPT" == "1" ]] && pid=$(tts_current_pid) && tts_signal TERM "$pid"
+  [[ "$STOP_ON_PROMPT" == "1" ]] && stop_all
   exit 0
 fi
 
+if [[ "$cmd" == "stop" ]]; then
+  if stop_all; then echo "Stopped."; else echo "Nothing is being spoken."; fi
+  exit 0
+fi
 pid=$(tts_current_pid) || { echo "Nothing is being spoken."; exit 0; }
 paused() { [[ "$(ps -o stat= -p "$pid" 2>/dev/null)" == T* ]]; }
 
 case "$cmd" in
-  stop)   tts_signal TERM "$pid"; echo "Stopped." ;;
   pause)  tts_signal STOP "$pid"; echo "Paused. Resume with: $(basename "$0") resume" ;;
   resume) tts_signal CONT "$pid"; echo "Resumed." ;;
   toggle) if paused; then tts_signal CONT "$pid"; echo "Resumed."

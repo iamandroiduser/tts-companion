@@ -94,8 +94,8 @@ Fe Co Ni Cu Zn Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te 
 Xe Cs Ba La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta W Re Os Ir Pt Au Hg Tl
 Pb Bi Po At Rn Fr Ra Ac Th Pa U Np Pu Am Cm Bk Cf Es Fm Md No Lr""".split())
 
-HTML_TAG_RE = re.compile(
-    r"</?(?:a|abbr|b|br|blockquote|center|code|del|details|div|em|font|h[1-6]|hr|i|img|ins|kbd|"
+HTML_TAG_RE = re.compile(                     # not right after a digit: 0<i and i>n is maths
+    r"(?<!\d)</?(?:a|abbr|b|br|blockquote|center|code|del|details|div|em|font|h[1-6]|hr|i|img|ins|kbd|"
     r"li|mark|ol|p|picture|pre|s|samp|small|source|span|strike|strong|sub|summary|sup|table|"
     r"tbody|td|th|thead|tr|u|ul|var)\b[^<>]*/?>", re.I)
 TABLE_DELIM_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$|^\s*\|\s*:?-{3,}:?\s*\|\s*$")
@@ -288,6 +288,9 @@ def speak_inline(line, hard=None):
     s = re.sub(r"(?<=[\w)])\s*>=\s*(?=[\w(])", " greater than or equal to ", s)
     s = re.sub(r"(?<=[\w)])\s+<\s+(?=[\w(])", " less than ", s)
     s = re.sub(r"(?<=[\w)])\s+>\s+(?=[\w(])", " greater than ", s)
+    # compact with a number on one side: x<3, 0<x (but not Vec<T>, which is code)
+    s = re.sub(r"(?<=[\w)])<(?=[-.]?\d)|(?<=\d)<(?=[\w(])", " less than ", s)
+    s = re.sub(r"(?<=[\w)])>(?=[-.]?\d)|(?<=\d)>(?=[\w(])", " greater than ", s)
     # Anything else that isn't a letter, digit or ordinary punctuation is noise
     # (emoji, box-drawing, stray markup) and is dropped.
     s = re.sub(r"[^\w\s.,;:!?'\"()%$/\-\x00]", " ", s)

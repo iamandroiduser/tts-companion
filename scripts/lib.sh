@@ -90,6 +90,12 @@ EOF
 TTS_STATE_DIR="${XDG_RUNTIME_DIR:-$HOME/.cache}/tts-companion"
 [[ -d "$TTS_STATE_DIR" ]] || { mkdir -p "${TTS_STATE_DIR%/*}" && mkdir -m 700 "$TTS_STATE_DIR"; } 2>/dev/null
 TTS_PIDFILE="$TTS_STATE_DIR/speaking.pid"
+# Changed by every stop (tts-companion stop, your next prompt). A speak run notes
+# it before reading its input and gives up if it changed, so a reply still being
+# read in when you stop it (or send your next prompt) can't start speaking later.
+TTS_CANCELFILE="$TTS_STATE_DIR/cancelled"
+tts_cancel_token() { cat "$TTS_CANCELFILE" 2>/dev/null; }
+tts_cancel_all() { echo "$(date +%s%N 2>/dev/null).$$.$RANDOM" > "$TTS_CANCELFILE" 2>/dev/null; }
 
 # tts_lock DIR [TRIES] [STALE_MIN] — take a mkdir lock recording our pid, retrying
 # every 50 ms. A lock is taken over only when its recorded owner is dead (or it has
