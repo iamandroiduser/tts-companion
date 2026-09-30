@@ -1,62 +1,270 @@
 #!/usr/bin/env bash
 # tts-companion — speak Claude Code replies (Stop) and alerts (Notification).
-# Engines: piper (free, offline, neural) | edge (free, online, no API key) | espeak (fallback).
+# Engines: piper (free, offline, neural) | edge (free, online, no API key) |
+#          say (macOS built-in) | espeak (espeak-ng / espeak / spd-say fallback).
 # Contract: never block Claude Code. Always exit 0.
+# Set TTS_DEBUG=1 to log which engine ran to stderr.
 
-PIPER_ROOT="${CLAUDE_PLUGIN_DATA:-$HOME/.local/share/piper}"
-CONF="${CLAUDE_PLUGIN_DATA:-$HOME/.claude}/tts.conf"
-[[ -f "$CONF" ]] && source "$CONF"
-ENGINE="${ENGINE:-piper}"
-PIPER_VOICE="${PIPER_VOICE:-en_US-lessac-medium}"
-EDGE_VOICE="${EDGE_VOICE:-en-US-AriaNeural}"
-MAX_CHARS="${MAX_CHARS:-400}"
+# When this run started, finely, taken first thing: it orders runs that start
+# close together (see tts_started_after). Linux's /proc start times count clock
+# ticks (two runs can share one); macOS's ps gives whole seconds. GNU date gives
+# nanoseconds; elsewhere perl (ships with macOS) gives milliseconds.
+MY_HIRES=$(date +%s.%N 2>/dev/null)
+[[ "$MY_HIRES" =~ ^[0-9]+\.[0-9]+$ ]] || MY_HIRES=$(perl -MTime::HiRes=time -e 'printf "%.6f", time' 2>/dev/null)
 
+# shellcheck source=scripts/lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 0
+tts_load_config
+[[ "$TTS_INNER" == 1 ]] && exit 0
+[[ "$ENABLED" == "1" ]] || exit 0
+
+debug() { [[ "${TTS_DEBUG:-0}" == "1" ]] && echo "tts-companion: $*" >&2; return 0; }
+
+[[ -n "$TTS_STATE_DIR" ]] || exit 0   # no safe private state dir (see lib.sh)
+MY_START=$(tts_proc_start $$)        # before reading the input: see tts_cancel_all
+MY_EPOCH=$(tts_start_epoch $$)
+CANCEL_TOKEN=$(tts_cancel_token)
 input=$(cat)
-event=$(jq -r '.hook_event_name // empty' <<<"$input" 2>/dev/null)
-if [[ "$event" == "Stop" ]]; then
-  text=$(jq -r '.last_assistant_message // empty' <<<"$input")
-else
-  text=$(jq -r '.message // empty' <<<"$input")
-fi
+event=$(tts_json hook_event_name <<<"$input")
+case "$event" in
+  Stop)         [[ "$SPEAK_REPLIES" == "1" ]]       || exit 0; text=$(tts_json last_assistant_message <<<"$input") ;;
+  Notification) [[ "$SPEAK_NOTIFICATIONS" == "1" ]] || exit 0; text=$(tts_json message <<<"$input") ;;
+  *)            text=$(tts_json message <<<"$input") ;;
+esac
 
-# Strip code fences, inline code, URLs; flatten; cap length
-text=$(awk 'BEGIN{c=0} /^```/{c=!c; next} !c{print}' <<<"$text" \
-  | sed -e 's/`[^`]*`//g' -e 's|https\?://[^ ]*| link |g' \
-  | tr '\n' ' ' | head -c "$MAX_CHARS")
+[[ -z "${text//[[:space:]]/}" ]] && exit 0
+
+# Where process start times are only known to the second (no /proc, e.g.
+# macOS), a stop in the second before we started counts as later (see
+# tts_cancelled). That is right for a reply, which can't belong to a prompt sent
+# a second ago, but an alert (e.g. a permission prompt) may: for those, only a
+# stop after we started reading counts, so new alerts aren't muted.
+CANCEL_EPOCH="$MY_EPOCH"
+[[ "$event" != "Stop" && -z "$MY_START" ]] && CANCEL_EPOCH=""
+
+PIDFILE="$TTS_PIDFILE"
+HANDOFF="$PIDFILE.lock"
+
+# Slow steps run as background jobs that we `wait` for: bash interrupts `wait`
+# as soon as a signal arrives, so a newer reply, `tts-companion stop`, or your
+# next prompt takes effect at once (a foreground command would delay the trap
+# until it finished). Temp files live in a private per-run directory inside the
+# user-only state dir, created here so cleanup sees them all.
+TMPD=$(mktemp -d "$TTS_STATE_DIR/run.XXXXXX") || exit 0
+TMP="$TMPD/speech"
+cleanup() {
+  rm -rf "$TMPD" 2>/dev/null
+  # Under the hand-off lock, so a newer run can't write its pid between our
+  # check and our delete (which would leave its speech untracked).
+  if tts_lock "$HANDOFF" 40; then
+    [[ "$(cat "$PIDFILE" 2>/dev/null)" == "$TTS_SELF" ]] && rm -f "$PIDFILE" "$PIDFILE.start"
+    [[ "$(cat "$TTS_STATE_DIR/playing" 2>/dev/null)" == "$TTS_SELF" ]] && rm -f "$TTS_STATE_DIR/playing"
+    tts_unlock "$HANDOFF"
+  fi
+}
+on_term() {
+  tts_unlock "$HANDOFF"
+  # Every background job's whole process group, including one launched just now
+  # whose pid isn't in $JOB yet.
+  local j
+  for j in $(jobs -p); do kill -TERM -- "-$j" 2>/dev/null; done
+  # shellcheck disable=SC2046
+  kill $(tts_descendants $$) 2>/dev/null
+  exit 0
+}
+trap cleanup EXIT
+trap on_term TERM INT
+set -m    # each background job gets its own process group (see on_term)
+# Wait for the background job, checking every 0.1 s whether speech was stopped
+# (the cancel file changed), so a stop that couldn't get the hand-off lock still
+# ends this run. The short sleeps are jobs too, so signals still act at once;
+# while paused, the loop is paused with us.
+wait_job() {
+  while kill -0 "$JOB" 2>/dev/null; do
+    if tts_cancelled "$CANCEL_TOKEN" "$MY_START" "$CANCEL_EPOCH"; then
+      debug "stopped"
+      kill -TERM -- "-$JOB" 2>/dev/null; kill -CONT -- "-$JOB" 2>/dev/null
+      exit 0
+    fi
+    sleep 0.1 & wait $! 2>/dev/null
+  done
+  wait "$JOB" 2>/dev/null
+}
+
+# Don't talk over ourselves: stop the previous run of *this* script (tracked by
+# pid file) and its players. Never pattern-match other users' processes. Done
+# before the text is prepared, so a new reply or prompt also cancels a
+# smart-speech model call that is still running. The hand-off is serialized by
+# a short lock (not held while speaking) so two hooks firing at once can't both
+# miss each other.
+tts_lock "$HANDOFF" 100 || { debug "hand-off lock busy; not speaking"; exit 0; }
+if tts_cancelled "$CANCEL_TOKEN" "$MY_START" "$CANCEL_EPOCH"; then   # stopped while we were starting
+  tts_unlock "$HANDOFF"; debug "stopped before speaking"; exit 0
+fi
+if old=$(tts_current_pid) && [[ "$old" != "$$" ]]; then
+  # Hooks run asynchronously: if the one speaking was started after us, we are
+  # the stale one (e.g. an older hook slow to read its input). Leave it be.
+  if tts_started_after "$old" "$MY_START" "$MY_EPOCH" "${MY_HIRES:-}"; then
+    tts_unlock "$HANDOFF"; debug "a newer reply is already speaking"; exit 0
+  fi
+  tts_signal TERM "$old"
+fi
+echo "$TTS_SELF" > "$PIDFILE" 2>/dev/null   # pid + start time: see tts_ident
+echo "$$ ${MY_HIRES:-}" > "$PIDFILE.start" 2>/dev/null
+tts_unlock "$HANDOFF"
+
+# Make the reply speakable (scripts/speechify.py): code blocks, tables and
+# diagrams become a short "... on screen" cue; inline code, equations, chemical
+# formulas and symbols are read out in words; long replies stop at a sentence
+# end. With SMART_SPEECH=1 a small Claude model describes the code blocks,
+# tables and diagrams instead. Without python3, a simpler sed version drops
+# code and keeps the words.
+if command -v python3 >/dev/null 2>&1; then
+  SMART_SPEECH="$SMART_SPEECH" SMART_SPEECH_MODEL="$SMART_SPEECH_MODEL" \
+    SMART_SPEECH_TIMEOUT="$SMART_SPEECH_TIMEOUT" \
+    python3 "$(dirname "${BASH_SOURCE[0]}")/speechify.py" "$MAX_CHARS" <<<"$text" >"$TMP.txt" &
+  JOB=$!; wait_job
+  text=$(cat "$TMP.txt")
+else
+  prep_fallback() {
+    # Fenced code, and code indented 4 columns past its list item (or the margin)
+    # after a blank line, become one "Code block on screen." each.
+    awk 'BEGIN { blank = 1; list = -1 }
+         { t=$0; sub(/^([[:space:]]*>)*[[:space:]]*/, "", t)    # t: the line without indent or > quote marks
+           l=$0; if (l ~ /^[[:space:]]*>/) sub(/^([[:space:]]*>[[:space:]]?)+/, "", l)   # l: without > quote marks
+           gsub(/\t/, "    ", l); match(l, /^ */); ind = RLENGTH }
+         !f && match(t, /^(```+|~~~+)/) { f=substr(t,1,RLENGTH); print "Code block on screen."; code=0; next }
+         f { c=t; sub(/[[:space:]]+$/, "", c)
+             if (substr(c,1,1) == substr(f,1,1) && c ~ /^(`+|~+)$/ && length(c) >= length(f)) f=""
+             next }
+         t == "" { if (!code) print; blank = 1; next }
+         (code || blank) && ind >= (list < 0 ? 4 : list + 4) {
+             if (!code) print "Code block on screen."; code = 1; blank = 0; next }
+         { code = 0; blank = 0
+           if (match(l, /^ *([-*+]|[0-9]+[.)]) +/)) list = RLENGTH
+           else if (ind == 0) list = -1
+           print }' <<<"$text" \
+    | sed -E -e 's/`([^`]*)`/\1/g' -e 's#https?://[^ )>]*# a link #g' \
+             -e 's/^[[:space:]]*([#>]+|[-*+]|[0-9]+\.)[[:space:]]+//' \
+             -e 's/(\*\*|__|\*)//g' -e 's/\|/ /g' -e 's/(::|_)/ /g' \
+    | tr '\n' ' ' | tr -s ' '
+  }
+  prep_fallback >"$TMP.txt" &        # a background job, like the python3 branch: see wait_job
+  JOB=$!; wait_job
+  text=$(cat "$TMP.txt")
+  if (( MAX_CHARS > 0 && ${#text} > MAX_CHARS )); then     # stop at a sentence end if one is close
+    note=". The rest is on screen."
+    room=$(( MAX_CHARS - ${#note} ))            # the note counts toward the limit
+    if (( room < 20 )); then                    # too short for the note: just a bounded prefix
+      cut="${text:0:MAX_CHARS}"
+      [[ "$cut" == *" "* ]] && cut="${cut% *}"
+      text="$cut"
+    else
+      cut="${text:0:room}"
+      sentence="${cut%[.!?] *}"
+      if (( ${#sentence} >= room * 2 / 5 && ${#sentence} < ${#cut} )); then cut="$sentence"; else cut="${cut% *}"; fi
+      text="$cut$note"
+    fi
+  fi
+fi
 [[ -z "${text// /}" ]] && exit 0
 
-# Don't talk over ourselves
-pkill -f 'piper --model' 2>/dev/null
-pkill -f 'edge-tts' 2>/dev/null
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Play an audio file, trying each installed player in turn until one succeeds
+# (one may exist but be unable to reach the sound device). SKIP_APLAY=1 skips
+# aplay when it has just failed on the streaming path.
+play_file() {
+  local f="$1" p
+  local -a players=()
+  if [[ "$f" == *.wav ]]; then
+    [[ "${SKIP_APLAY:-0}" == 1 ]] || players+=("aplay -q")
+    players+=("paplay" "pw-play")
+  fi
+  players+=("afplay" "ffplay -nodisp -autoexit -loglevel quiet" "mpv --really-quiet --no-video")
+  [[ "$f" == *.mp3 ]] && players+=("mpg123 -q")
+  for p in "${players[@]}"; do
+    have "${p%% *}" || continue
+    # shellcheck disable=SC2086  # $p is a command plus its fixed options
+    $p "$f" 2>/dev/null && return 0
+    debug "player ${p%% *} failed; trying the next one"
+  done
+  return 1
+}
+
+# Pick the configured voice, else the default voice, else any installed voice.
+piper_model() {
+  local v m
+  for v in "$PIPER_VOICE" "$TTS_DEFAULT_VOICE"; do            # a voice needs both files
+    [[ -f "$PIPER_ROOT/$v.onnx" && -f "$PIPER_ROOT/$v.onnx.json" ]] && { echo "$PIPER_ROOT/$v.onnx"; return 0; }
+  done
+  for m in "$PIPER_ROOT"/*.onnx; do
+    [[ -f "$m" && -f "$m.json" ]] && { echo "$m"; return 0; }
+  done
+  return 1
+}
 
 speak_piper() {
-  local piper="$PIPER_ROOT/bin/piper" model="$PIPER_ROOT/$PIPER_VOICE.onnx" rate
-  [[ -x "$piper" && -f "$model" ]] || return 1
-  rate=$(jq -r '.audio.sample_rate // 22050' "$model.json" 2>/dev/null)
-  printf '%s' "$text" | "$piper" --model "$model" --output-raw 2>/dev/null \
-    | aplay -r "${rate:-22050}" -f S16_LE -t raw - 2>/dev/null
+  local piper="$PIPER_ROOT/bin/piper" model rate f
+  [[ -x "$piper" ]] || { debug "piper: no binary at $piper"; return 1; }
+  model=$(piper_model) || { debug "piper: no voice in $PIPER_ROOT"; return 1; }
+  debug "piper: $model"
+  if have aplay; then
+    # Stream raw PCM so speech starts before synthesis finishes.
+    rate=$(tts_json audio.sample_rate "$model.json")
+    printf '%s' "$text" | "$piper" --model "$model" --output_raw 2>/dev/null \
+      | aplay -q -r "${rate:-22050}" -f S16_LE -c 1 -t raw - 2>/dev/null
+    local st=("${PIPESTATUS[@]}")
+    (( st[1] == 0 && st[2] == 0 )) && return 0
+    # When aplay can't open the device, piper also fails (broken pipe), so any
+    # failure retries through a WAV; a real piper failure fails that too.
+    debug "streaming playback failed; rendering a WAV for the other players"
+    local SKIP_APLAY=0
+    (( st[2] != 0 )) && SKIP_APLAY=1
+  fi
+  f="$TMP"
+  printf '%s' "$text" | "$piper" --model "$model" --output_file "$f.wav" >/dev/null 2>&1 \
+    && play_file "$f.wav"
 }
 
 speak_edge() {
-  local edge; edge=$(command -v edge-tts || echo "$HOME/.local/share/edge-tts/bin/edge-tts")
-  [[ -x "$edge" ]] || return 1
-  local f; f=$(mktemp --suffix=.mp3)
-  if ! printf '%s' "$text" | "$edge" --voice "$EDGE_VOICE" --write-media "$f" 2>/dev/null; then
-    rm -f "$f"; return 1
-  fi
-  if   command -v ffplay >/dev/null; then ffplay -nodisp -autoexit "$f" 2>/dev/null
-  elif command -v mpv    >/dev/null; then mpv --really-quiet "$f" 2>/dev/null
-  elif command -v mpg123 >/dev/null; then mpg123 -q "$f" 2>/dev/null
-  else rm -f "$f"; return 1
-  fi
-  rm -f "$f"
+  local edge f
+  edge=$(command -v edge-tts || echo "$HOME/.local/share/edge-tts/bin/edge-tts")
+  [[ -x "$edge" ]] || { debug "edge: edge-tts not installed"; return 1; }
+  f="$TMP"
+  debug "edge: $EDGE_VOICE"
+  # Text via a file, not an argument: an unlimited reply can exceed ARG_MAX.
+  printf '%s' "$text" > "$f.edge.txt" || return 1
+  "$edge" --voice "$EDGE_VOICE" --file "$f.edge.txt" --write-media "$f.mp3" 2>/dev/null \
+    && play_file "$f.mp3"
 }
 
-speak_espeak() { command -v espeak-ng >/dev/null && espeak-ng -s 165 <<<"$text"; }
+speak_say() { have say && { debug "say"; say <<<"$text"; }; }
 
-case "$ENGINE" in
-  piper) speak_piper || speak_edge || speak_espeak ;;
-  edge)  speak_edge  || speak_piper || speak_espeak ;;
-  *)     speak_espeak ;;
-esac
+# Try each installed engine until one works (one may exist but fail to reach
+# the sound device).
+speak_espeak() {
+  local found=0
+  if have espeak-ng; then found=1; debug "espeak-ng"; espeak-ng -s 165 <<<"$text" 2>/dev/null && return 0; fi
+  if have espeak;    then found=1; debug "espeak";    espeak -s 165 <<<"$text" 2>/dev/null && return 0; fi
+  if have spd-say;   then found=1; debug "spd-say";   spd-say -w -e <<<"$text" >/dev/null 2>&1 && return 0; fi
+  (( found )) && debug "every speech engine failed" || debug "no speech engine found"
+  return 1
+}
+
+# A newer reply may have taken over, or speech was stopped, while the text was prepared.
+[[ "$(cat "$PIDFILE" 2>/dev/null)" == "$TTS_SELF" ]] && ! tts_cancelled "$CANCEL_TOKEN" "$MY_START" "$CANCEL_EPOCH" || exit 0
+
+speak() {
+  case "$ENGINE" in
+    piper)  speak_piper  || speak_edge  || speak_say || speak_espeak ;;
+    edge)   speak_edge   || speak_piper || speak_say || speak_espeak ;;
+    say)    speak_say    || speak_espeak ;;
+    piper-only) speak_piper || { echo "tts-companion: Piper could not play voice $PIPER_VOICE" >&2; return 1; } ;;
+    *)      speak_espeak || speak_say ;;
+  esac
+}
+echo "$TTS_SELF" > "$TTS_STATE_DIR/playing" 2>/dev/null   # for `tts-companion status`
+speak &
+JOB=$!; wait_job
 exit 0
