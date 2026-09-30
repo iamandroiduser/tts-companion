@@ -246,6 +246,9 @@ tts_descendants() {
 tts_current_pid() {
   local rec pid
   rec=$(cat "$TTS_PIDFILE" 2>/dev/null) || return 1
+  # Only a "PID START" record can prove the process is still that speaker; a bare
+  # pid (older version, or no ps) may by now belong to anything: never signal it.
+  [[ "$rec" == *" "* ]] || return 1
   pid=${rec%% *}
   tts_ident_alive "$rec" && ps -p "$pid" -o args= 2>/dev/null | grep -q 'tts-speak' || return 1
   echo "$pid"
