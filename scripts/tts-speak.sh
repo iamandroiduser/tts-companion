@@ -27,6 +27,14 @@ esac
 
 [[ -z "${text//[[:space:]]/}" ]] && exit 0
 
+# Where process start times are only known to the second (no /proc, e.g.
+# macOS), a stop in the second before we started counts as later (see
+# tts_cancelled). That is right for a reply, which can't belong to a prompt sent
+# a second ago, but an alert (e.g. a permission prompt) may: for those, only a
+# stop after we started reading counts, so new alerts aren't muted.
+CANCEL_EPOCH="$MY_EPOCH"
+[[ "$event" != "Stop" && -z "$MY_START" ]] && CANCEL_EPOCH=""
+
 PIDFILE="$TTS_PIDFILE"
 HANDOFF="$PIDFILE.lock"
 
@@ -59,9 +67,21 @@ on_term() {
 trap cleanup EXIT
 trap on_term TERM INT
 set -m    # each background job gets its own process group (see on_term)
-# With job control, `wait` also returns when the job is paused (tts-companion
-# pause), so keep waiting until it has really finished.
-wait_job() { while :; do wait "$JOB"; kill -0 "$JOB" 2>/dev/null || break; sleep 0.2; done; }
+# Wait for the background job, checking every 0.1 s whether speech was stopped
+# (the cancel file changed), so a stop that couldn't get the hand-off lock still
+# ends this run. The short sleeps are jobs too, so signals still act at once;
+# while paused, the loop is paused with us.
+wait_job() {
+  while kill -0 "$JOB" 2>/dev/null; do
+    if tts_cancelled "$CANCEL_TOKEN" "$MY_START" "$CANCEL_EPOCH"; then
+      debug "stopped"
+      kill -TERM -- "-$JOB" 2>/dev/null; kill -CONT -- "-$JOB" 2>/dev/null
+      exit 0
+    fi
+    sleep 0.1 & wait $! 2>/dev/null
+  done
+  wait "$JOB" 2>/dev/null
+}
 
 # Don't talk over ourselves: stop the previous run of *this* script (tracked by
 # pid file) and its players. Never pattern-match other users' processes. Done
@@ -70,7 +90,7 @@ wait_job() { while :; do wait "$JOB"; kill -0 "$JOB" 2>/dev/null || break; sleep
 # a short lock (not held while speaking) so two hooks firing at once can't both
 # miss each other.
 tts_lock "$HANDOFF" 100 || { debug "hand-off lock busy; not speaking"; exit 0; }
-if tts_cancelled "$CANCEL_TOKEN" "$MY_START" "$MY_EPOCH"; then   # stopped while we were starting
+if tts_cancelled "$CANCEL_TOKEN" "$MY_START" "$CANCEL_EPOCH"; then   # stopped while we were starting
   tts_unlock "$HANDOFF"; debug "stopped before speaking"; exit 0
 fi
 if old=$(tts_current_pid) && [[ "$old" != "$$" ]]; then
@@ -213,7 +233,7 @@ speak_espeak() {
 }
 
 # A newer reply may have taken over, or speech was stopped, while the text was prepared.
-[[ "$(cat "$PIDFILE" 2>/dev/null)" == "$TTS_SELF" ]] && ! tts_cancelled "$CANCEL_TOKEN" "$MY_START" "$MY_EPOCH" || exit 0
+[[ "$(cat "$PIDFILE" 2>/dev/null)" == "$TTS_SELF" ]] && ! tts_cancelled "$CANCEL_TOKEN" "$MY_START" "$CANCEL_EPOCH" || exit 0
 
 speak() {
   case "$ENGINE" in

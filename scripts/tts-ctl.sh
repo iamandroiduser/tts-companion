@@ -19,15 +19,15 @@ tts_load_config
 # Stop what is playing and cancel replies still being prepared. Done under the
 # speak hand-off lock, so a run can't register itself between the two steps.
 # Returns 0 if something was stopped, 1 if nothing was playing, 2 if the lock
-# stayed busy: replies still being prepared are cancelled even then, but the
-# speaker is only looked up and signalled while we hold the lock.
+# stayed busy: speech is cancelled even then (see below), but the speaker is only
+# looked up and signalled directly while we hold the lock.
 stop_all() {
   local pid
-  if ! tts_lock "$TTS_PIDFILE.lock" 40; then
-    tts_cancel_all
-    return 2
-  fi
+  # First, before waiting for the lock: every run (a speaking one included)
+  # checks this and stops within about 0.1 s, even if the lock stays busy or
+  # this hook is cut off by its timeout.
   tts_cancel_all
+  tts_lock "$TTS_PIDFILE.lock" 40 || return 2
   pid=$(tts_current_pid) && tts_signal TERM "$pid"
   tts_unlock "$TTS_PIDFILE.lock"
   [[ -n "$pid" ]]
