@@ -8,6 +8,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 0
 # shellcheck source=scripts/lib.sh
 source "$HERE/lib.sh" || exit 0
 tts_load_config
+[[ "$TTS_INNER" == 1 ]] && exit 0
 lock="$PIPER_ROOT/.install.lock"
 failed="$PIPER_ROOT/.install-failed"
 

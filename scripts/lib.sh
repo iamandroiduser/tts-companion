@@ -4,6 +4,10 @@
 # Paths and config resolve the same way whether a script runs as a Claude Code
 # hook (CLAUDE_PLUGIN_DATA / CLAUDE_PLUGIN_ROOT set) or by hand from a shell.
 
+# Set for the `claude -p` run that smart speech starts; our hooks do nothing inside it.
+# shellcheck disable=SC2034  # used by the scripts that source this file
+[[ "${TTS_COMPANION_INNER:-}" == "1" ]] && TTS_INNER=1 || TTS_INNER=0
+
 TTS_DEFAULT_VOICE="en_GB-jenny_dioco-medium"
 TTS_USER_CONF="$HOME/.claude/tts.conf"
 TTS_DEFAULT_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/piper"
@@ -28,6 +32,9 @@ tts_load_config() {
   SPEAK_NOTIFICATIONS="${SPEAK_NOTIFICATIONS:-1}"
   AUTO_INSTALL="${AUTO_INSTALL:-1}"
   STOP_ON_PROMPT="${STOP_ON_PROMPT:-1}"
+  SMART_SPEECH="${SMART_SPEECH:-0}"
+  SMART_SPEECH_MODEL="${SMART_SPEECH_MODEL:-haiku}"
+  SMART_SPEECH_TIMEOUT="${SMART_SPEECH_TIMEOUT:-25}"
 
   # Piper install dir: explicit PIPER_ROOT, else the first candidate that has the
   # binary, else the default. The plugin data dir is only a legacy candidate.
@@ -70,6 +77,8 @@ tts_write_conf_template() {
 #SPEAK_REPLIES=1                  # speak each finished reply (Stop hook)
 #SPEAK_NOTIFICATIONS=1            # speak permission / idle alerts
 #STOP_ON_PROMPT=1                 # sending your next prompt stops the current speech
+#SMART_SPEECH=0                   # 1: a small Claude model describes code/tables/diagrams in a sentence
+#SMART_SPEECH_MODEL=haiku         #    (uses your Claude Code login; adds ~5 s before such replies are spoken)
 #AUTO_INSTALL=1                   # 0 stops the background Piper download at session start
 #PIPER_ROOT=$TTS_DEFAULT_ROOT
 EOF

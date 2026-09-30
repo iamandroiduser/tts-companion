@@ -19,6 +19,7 @@ tts_load_config
 cmd="${1:-toggle}"
 if [[ "$cmd" == "prompt-stop" ]]; then
   cat >/dev/null                       # drain the hook's JSON input
+  [[ "$TTS_INNER" == 1 ]] && exit 0
   [[ "$STOP_ON_PROMPT" == "1" ]] && pid=$(tts_current_pid) && tts_signal TERM "$pid"
   exit 0
 fi

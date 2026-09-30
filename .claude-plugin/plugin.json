@@ -1,6 +1,6 @@
 {
     "name": "tts-companion",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "description": "Free offline text-to-speech for Claude Code: speaks replies and notifications (Piper neural voices, edge-tts optional, espeak-ng fallback).",
     "license": "MIT",
     "keywords": ["tts", "voice", "accessibility", "speech", "notifications"],

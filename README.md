@@ -57,6 +57,7 @@ ENGINE=piper                     # piper | edge | say | espeak
 PIPER_VOICE=en_GB-jenny_dioco-medium
 MAX_CHARS=1500                   # longer replies stop at a sentence end + "The rest is on screen"; 0 = no limit
 STOP_ON_PROMPT=1                 # sending your next prompt stops the current speech
+SMART_SPEECH=0                   # 1: a small Claude model describes code, tables and diagrams
 SPEAK_REPLIES=1                  # speak each finished reply
 SPEAK_NOTIFICATIONS=1            # speak permission / idle alerts
 AUTO_INSTALL=1                   # 0 disables the background download
@@ -83,6 +84,31 @@ Replies are rewritten for listening before they are spoken (`scripts/speechify.p
 | π, θ, ≤, ≈, →, x² | "pi", "theta", "less than or equal to", "approximately", "to", "x squared" |
 
 This needs `python3`; without it a simpler filter drops code blocks and keeps the words.
+
+### Smart speech (optional)
+
+With `SMART_SPEECH=1` in `~/.claude/tts.conf`, code blocks, tables, diagrams and
+long equations are sent (in one batched request per reply) to a small Claude
+model, Haiku by default, through your local `claude` CLI and existing Claude
+Code login; no API key needed. For each block it returns a one- or two-sentence
+description, e.g. *"A retry helper that tries up to 3 times with exponential
+backoff"* or *"Cold start improved from 820 to 310 milliseconds"*. For blocks
+not worth hearing, such as install logs, it answers SKIP, and you get the usual
+"… on screen" cue.
+
+- Only those blocks are sent. The prose of the reply is never sent or rewritten.
+- Adds roughly 5–10 seconds before such replies are spoken, and uses your Claude
+  plan (or API credits) for each reply that contains such blocks.
+- Any failure (no `claude` on PATH, not logged in, timeout after
+  `SMART_SPEECH_TIMEOUT` seconds, unusable answer) falls back to the cues.
+- The model runs with no tools, no saved session, and without your settings,
+  hooks or plugins (`--setting-sources ""`), so it can't act or re-trigger this plugin.
+
+```bash
+SMART_SPEECH=1
+SMART_SPEECH_MODEL=haiku      # any `claude --model` value
+SMART_SPEECH_TIMEOUT=25
+```
 
 ## Stop, pause and resume
 

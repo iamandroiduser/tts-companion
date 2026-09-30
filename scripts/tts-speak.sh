@@ -8,6 +8,7 @@
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 0
 tts_load_config
+[[ "$TTS_INNER" == 1 ]] && exit 0
 [[ "$ENABLED" == "1" ]] || exit 0
 
 debug() { [[ "${TTS_DEBUG:-0}" == "1" ]] && echo "tts-companion: $*" >&2; return 0; }
@@ -20,12 +21,57 @@ case "$event" in
   *)            text=$(tts_json message <<<"$input") ;;
 esac
 
+[[ -z "${text//[[:space:]]/}" ]] && exit 0
+
+# Don't talk over ourselves: stop the previous run of *this* script (tracked by
+# pid file) and its players. Never pattern-match other users' processes. Done
+# before the text is prepared, so a new reply or prompt also cancels a
+# smart-speech model call that is still running.
+PIDFILE="$TTS_PIDFILE"
+# Serialize the hand-off (not the speech) so two hooks firing at once can't both
+# miss each other; a lock left by a crashed run is taken over after ~1s.
+HANDOFF="$PIDFILE.lock"
+for _ in {1..20}; do mkdir "$HANDOFF" 2>/dev/null && break; sleep 0.05; done
+if old=$(tts_current_pid) && [[ "$old" != "$$" ]]; then
+  tts_signal TERM "$old"
+fi
+echo "$$" > "$PIDFILE" 2>/dev/null
+rmdir "$HANDOFF" 2>/dev/null
+
+# Slow steps run as background jobs that we `wait` for: bash interrupts `wait`
+# as soon as a signal arrives, so a newer reply, `tts-companion stop`, or your
+# next prompt takes effect at once (a foreground command would delay the trap
+# until it finished). Temp files are created here so cleanup sees them all.
+TMP=$(mktemp "${TMPDIR:-/tmp}/tts-companion.XXXXXX") || exit 0
+cleanup() {
+  rm -f "$TMP" "$TMP.txt" "$TMP.wav" "$TMP.mp3" 2>/dev/null
+  [[ "$(cat "$PIDFILE" 2>/dev/null)" == "$$" ]] && rm -f "$PIDFILE"
+}
+on_term() {
+  [[ -n "${JOB:-}" ]] && kill -TERM -- "-$JOB" 2>/dev/null   # the job's whole process group
+  # shellcheck disable=SC2046
+  kill $(tts_descendants $$) 2>/dev/null
+  exit 0
+}
+trap cleanup EXIT
+trap on_term TERM INT
+set -m    # each background job gets its own process group (see on_term)
+# With job control, `wait` also returns when the job is paused (tts-companion
+# pause), so keep waiting until it has really finished.
+wait_job() { while :; do wait "$JOB"; kill -0 "$JOB" 2>/dev/null || break; done; }
+
 # Make the reply speakable (scripts/speechify.py): code blocks, tables and
 # diagrams become a short "... on screen" cue; inline code, equations, chemical
 # formulas and symbols are read out in words; long replies stop at a sentence
-# end. Without python3, a simpler sed version drops code and keeps the words.
+# end. With SMART_SPEECH=1 a small Claude model describes the code blocks,
+# tables and diagrams instead. Without python3, a simpler sed version drops
+# code and keeps the words.
 if command -v python3 >/dev/null 2>&1; then
-  text=$(python3 "$(dirname "${BASH_SOURCE[0]}")/speechify.py" "$MAX_CHARS" <<<"$text")
+  SMART_SPEECH="$SMART_SPEECH" SMART_SPEECH_MODEL="$SMART_SPEECH_MODEL" \
+    SMART_SPEECH_TIMEOUT="$SMART_SPEECH_TIMEOUT" \
+    python3 "$(dirname "${BASH_SOURCE[0]}")/speechify.py" "$MAX_CHARS" <<<"$text" >"$TMP.txt" &
+  JOB=$!; wait_job
+  text=$(cat "$TMP.txt")
 else
   text=$(awk 'BEGIN{c=0} /^[[:space:]]*```/{if(!c)print "Code block on screen."; c=!c; next} !c{print}' <<<"$text" \
     | sed -E -e 's/`([^`]*)`/\1/g' -e 's#https?://[^ )>]*# a link #g' \
@@ -38,27 +84,6 @@ else
   fi
 fi
 [[ -z "${text// /}" ]] && exit 0
-
-# Don't talk over ourselves: stop the previous run of *this* script (tracked by
-# pid file) and its players. Never pattern-match other users' processes.
-PIDFILE="$TTS_PIDFILE"
-# Serialize the hand-off (not the speech) so two hooks firing at once can't both
-# miss each other; a lock left by a crashed run is taken over after ~1s.
-HANDOFF="$PIDFILE.lock"
-for _ in {1..20}; do mkdir "$HANDOFF" 2>/dev/null && break; sleep 0.05; done
-if old=$(tts_current_pid) && [[ "$old" != "$$" ]]; then
-  tts_signal TERM "$old"
-fi
-echo "$$" > "$PIDFILE" 2>/dev/null
-rmdir "$HANDOFF" 2>/dev/null
-
-TMPFILES=()
-cleanup() {
-  rm -f "${TMPFILES[@]}" 2>/dev/null
-  [[ "$(cat "$PIDFILE" 2>/dev/null)" == "$$" ]] && rm -f "$PIDFILE"
-}
-trap cleanup EXIT
-trap 'exit 0' TERM INT
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -102,8 +127,7 @@ speak_piper() {
     (( st[1] == 0 && st[2] == 0 ))
     return
   fi
-  f=$(mktemp "${TMPDIR:-/tmp}/tts-companion.XXXXXX") || return 1
-  TMPFILES+=("$f" "$f.wav")
+  f="$TMP"
   printf '%s' "$text" | "$piper" --model "$model" --output_file "$f.wav" 2>/dev/null \
     && play_file "$f.wav"
 }
@@ -112,8 +136,7 @@ speak_edge() {
   local edge f
   edge=$(command -v edge-tts || echo "$HOME/.local/share/edge-tts/bin/edge-tts")
   [[ -x "$edge" ]] || { debug "edge: edge-tts not installed"; return 1; }
-  f=$(mktemp "${TMPDIR:-/tmp}/tts-companion.XXXXXX") || return 1
-  TMPFILES+=("$f" "$f.mp3")
+  f="$TMP"
   debug "edge: $EDGE_VOICE"
   "$edge" --voice "$EDGE_VOICE" --text="$text" --write-media "$f.mp3" 2>/dev/null \
     && play_file "$f.mp3"
@@ -129,10 +152,17 @@ speak_espeak() {
   fi 2>/dev/null
 }
 
-case "$ENGINE" in
-  piper)  speak_piper  || speak_edge  || speak_say || speak_espeak ;;
-  edge)   speak_edge   || speak_piper || speak_say || speak_espeak ;;
-  say)    speak_say    || speak_espeak ;;
-  *)      speak_espeak || speak_say ;;
-esac
+# A newer reply may have taken over while the text was being prepared.
+[[ "$(cat "$PIDFILE" 2>/dev/null)" == "$$" ]] || exit 0
+
+speak() {
+  case "$ENGINE" in
+    piper)  speak_piper  || speak_edge  || speak_say || speak_espeak ;;
+    edge)   speak_edge   || speak_piper || speak_say || speak_espeak ;;
+    say)    speak_say    || speak_espeak ;;
+    *)      speak_espeak || speak_say ;;
+  esac
+}
+speak &
+JOB=$!; wait_job
 exit 0
