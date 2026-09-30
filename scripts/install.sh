@@ -33,8 +33,15 @@ case "$(uname -m)" in
 esac
 
 mkdir -p "$ROOT"
+# One installer at a time: a manual run takes the same lock the background
+# worker holds (the worker, which already owns it, sets TTS_INSTALL_LOCKED=1).
+lock="$ROOT/.install.lock"
+if [[ "${TTS_INSTALL_LOCKED:-0}" != 1 ]]; then
+  echo ">> Waiting for any other install to finish..."
+  tts_lock "$lock" 12000 5 || die "another install is still running (see $ROOT/install.log)"
+fi
 tmp=$(mktemp -d "$ROOT/.install.XXXXXX")
-trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf "$tmp"; [[ "${TTS_INSTALL_LOCKED:-0}" == 1 ]] || tts_unlock "$lock"' EXIT
 
 # Download to a temp dir first, then move into place, so an interrupted
 # download never leaves a half-installed binary or voice behind.
@@ -65,8 +72,11 @@ if [[ "$FORCE" == 1 || ! -f "$ROOT/$VOICE.onnx" || ! -f "$ROOT/$VOICE.onnx.json"
   echo ">> Downloading voice $VOICE"
   curl -fsSLo "$tmp/$VOICE.onnx.json" "$base/$VOICE.onnx.json"
   curl -fsSLo "$tmp/$VOICE.onnx"      "$base/$VOICE.onnx"
-  mv "$tmp/$VOICE.onnx.json" "$ROOT/$VOICE.onnx.json"
+  # The .json goes in last: a voice counts as installed only when both files
+  # exist, so an interrupted replace can never leave a mismatched pair behind.
+  rm -f "$ROOT/$VOICE.onnx.json" "$ROOT/$VOICE.onnx"
   mv "$tmp/$VOICE.onnx"      "$ROOT/$VOICE.onnx"
+  mv "$tmp/$VOICE.onnx.json" "$ROOT/$VOICE.onnx.json"
 else
   echo ">> Voice $VOICE already installed"
 fi

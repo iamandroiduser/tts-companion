@@ -35,7 +35,12 @@ TMPD=$(mktemp -d "$TTS_STATE_DIR/run.XXXXXX") || exit 0
 TMP="$TMPD/speech"
 cleanup() {
   rm -rf "$TMPD" 2>/dev/null
-  [[ "$(cat "$PIDFILE" 2>/dev/null)" == "$$" ]] && rm -f "$PIDFILE"
+  # Under the hand-off lock, so a newer run can't write its pid between our
+  # check and our delete (which would leave its speech untracked).
+  if tts_lock "$HANDOFF" 40; then
+    [[ "$(cat "$PIDFILE" 2>/dev/null)" == "$$" ]] && rm -f "$PIDFILE"
+    tts_unlock "$HANDOFF"
+  fi
 }
 on_term() {
   tts_unlock "$HANDOFF"
@@ -78,9 +83,11 @@ if command -v python3 >/dev/null 2>&1; then
   text=$(cat "$TMP.txt")
 else
   text=$(awk '{ t=$0; sub(/^[[:space:]]+/, "", t) }
-             !f && (t ~ /^```/ || t ~ /^~~~/) { f=substr(t,1,3); print "Code block on screen."; next }
-             f && index(t, f) == 1 { f=""; next }
-             !f { print }' <<<"$text" \
+             !f && match(t, /^(```+|~~~+)/) { f=substr(t,1,RLENGTH); print "Code block on screen."; next }
+             f { c=t; sub(/[[:space:]]+$/, "", c)
+                 if (substr(c,1,1) == substr(f,1,1) && c ~ /^(`+|~+)$/ && length(c) >= length(f)) f=""
+                 next }
+             { print }' <<<"$text" \
     | sed -E -e 's/`([^`]*)`/\1/g' -e 's#https?://[^ )>]*# a link #g' \
              -e 's/^[[:space:]]*([#>]+|[-*+]|[0-9]+\.)[[:space:]]+//' \
              -e 's/(\*\*|__|\*)//g' -e 's/\|/ /g' -e 's/(::|_)/ /g' \
@@ -178,6 +185,7 @@ speak() {
     piper)  speak_piper  || speak_edge  || speak_say || speak_espeak ;;
     edge)   speak_edge   || speak_piper || speak_say || speak_espeak ;;
     say)    speak_say    || speak_espeak ;;
+    piper-only) speak_piper || { echo "tts-companion: Piper could not play voice $PIPER_VOICE" >&2; return 1; } ;;
     *)      speak_espeak || speak_say ;;
   esac
 }

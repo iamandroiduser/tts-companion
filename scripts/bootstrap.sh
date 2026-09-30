@@ -17,7 +17,7 @@ if [[ "${1:-}" == "--worker" ]]; then
   echo "$$" > "$lock/pid"
   trap 'tts_unlock "$lock"' EXIT
   echo "=== $(date) installing $PIPER_VOICE into $PIPER_ROOT"
-  if bash "$HERE/install.sh" "$PIPER_VOICE"; then rm -f "$failed"; else touch "$failed"; fi
+  if TTS_INSTALL_LOCKED=1 bash "$HERE/install.sh" "$PIPER_VOICE"; then rm -f "$failed"; else touch "$failed"; fi
   exit 0
 fi
 

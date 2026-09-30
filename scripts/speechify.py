@@ -266,6 +266,10 @@ def speak_inline(line):
     for k, v in SYMBOLS.items():
         s = s.replace(k, v)
     s = re.sub(r"\s->\s|\s=>\s", " to ", s)
+    s = re.sub(r"(?<=[\w)])\s*<=\s*(?=[\w(])", " less than or equal to ", s)   # comparisons in prose
+    s = re.sub(r"(?<=[\w)])\s*>=\s*(?=[\w(])", " greater than or equal to ", s)
+    s = re.sub(r"(?<=[\w)])\s+<\s+(?=[\w(])", " less than ", s)
+    s = re.sub(r"(?<=[\w)])\s+>\s+(?=[\w(])", " greater than ", s)
     # Anything else that isn't a letter, digit or ordinary punctuation is noise
     # (emoji, box-drawing, stray markup) and is dropped.
     s = re.sub(r"[^\w\s.,;:!?'\"()%$/\-\x00]", " ", s)
@@ -376,6 +380,9 @@ def speechify(md, blocks=None):
     return clean_ws(" ".join(out))
 
 
+TRUNCATION_NOTE = " The rest is on screen."
+
+
 def truncate(text, limit):
     """Cut at a sentence end within the limit and say so, instead of mid-sentence."""
     if limit <= 0 or len(text) <= limit:
@@ -384,7 +391,7 @@ def truncate(text, limit):
     ends = [m.end() for m in re.finditer(r"[.!?](?=\s)", cut + " ")]
     good = [e for e in ends if e >= limit * 0.4]
     cut = cut[:good[-1]] if good else cut.rsplit(" ", 1)[0]
-    return cut.rstrip() + " The rest is on screen."
+    return cut.rstrip() + TRUNCATION_NOTE
 
 
 # ------------------------------------------------------------ smart mode
@@ -470,20 +477,24 @@ def main():
 
 
 def audible_blocks(text, blocks, limit):
-    """Indexes of blocks that start before the speech limit (measured with their
-    short cues), so blocks that will be cut off anyway aren't sent to the model."""
+    """Indexes of blocks that survive the same sentence-aware cut as the final
+    text (measured with their short cues), so blocks that won't be heard aren't
+    sent to the model. A description longer than its cue can still move the cut
+    a little earlier; those extra blocks are then simply not spoken."""
     if limit <= 0:
         return list(range(len(blocks)))
-    wanted, offset, pos = [], 0, 0
+    pieces, starts, pos = [], {}, 0
     for m in re.finditer(r"\x01(\d+)\x01", text):
-        offset += m.start() - pos
-        if offset >= limit:
-            break
+        pieces.append(text[pos:m.start()])
         n = int(m.group(1))
-        wanted.append(n)
-        offset += len(blocks[n]["cue"])
+        starts[n] = sum(map(len, pieces))
+        pieces.append(blocks[n]["cue"])
         pos = m.end()
-    return wanted
+    pieces.append(text[pos:])
+    resolved = "".join(pieces)
+    cut = truncate(resolved, limit)
+    kept = len(cut) - (len(TRUNCATION_NOTE) if cut != resolved else 0)
+    return [n for n in sorted(starts) if starts[n] < kept]
 
 
 if __name__ == "__main__":

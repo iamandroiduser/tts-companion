@@ -12,7 +12,7 @@ for m in "$PIPER_ROOT"/*.onnx; do
   name=$(basename "$m" .onnx)
   echo ">>> $name"
   printf '{"hook_event_name":"Preview","message":"Hello, this is %s. Your tests all passed."}' "$name" \
-    | TTS_VOICE="$name" TTS_ENGINE=piper "$HERE/tts-speak.sh"
+    | TTS_VOICE="$name" TTS_ENGINE=piper-only "$HERE/tts-speak.sh"   # never another engine
 done
 [[ "$found" == "0" ]] && echo "No voices found in $PIPER_ROOT — run $HERE/install.sh first."
 echo "Set your favorite in $TTS_USER_CONF  (PIPER_VOICE=<name>)"
