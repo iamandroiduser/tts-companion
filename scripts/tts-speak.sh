@@ -118,12 +118,22 @@ if command -v python3 >/dev/null 2>&1; then
   text=$(cat "$TMP.txt")
 else
   prep_fallback() {
-    awk '{ t=$0; sub(/^([[:space:]]*>)*[[:space:]]*/, "", t) }   # t: the line without indent or > quote marks
-             !f && match(t, /^(```+|~~~+)/) { f=substr(t,1,RLENGTH); print "Code block on screen."; next }
-             f { c=t; sub(/[[:space:]]+$/, "", c)
-                 if (substr(c,1,1) == substr(f,1,1) && c ~ /^(`+|~+)$/ && length(c) >= length(f)) f=""
-                 next }
-             { print }' <<<"$text" \
+    # Fenced code, and code indented 4 columns past its list item (or the margin)
+    # after a blank line, become one "Code block on screen." each.
+    awk 'BEGIN { blank = 1; list = -1 }
+         { t=$0; sub(/^([[:space:]]*>)*[[:space:]]*/, "", t)    # t: the line without indent or > quote marks
+           l=$0; gsub(/\t/, "    ", l); match(l, /^ */); ind = RLENGTH }
+         !f && match(t, /^(```+|~~~+)/) { f=substr(t,1,RLENGTH); print "Code block on screen."; code=0; next }
+         f { c=t; sub(/[[:space:]]+$/, "", c)
+             if (substr(c,1,1) == substr(f,1,1) && c ~ /^(`+|~+)$/ && length(c) >= length(f)) f=""
+             next }
+         t == "" { if (!code) print; blank = 1; next }
+         (code || blank) && ind >= (list < 0 ? 4 : list + 4) {
+             if (!code) print "Code block on screen."; code = 1; blank = 0; next }
+         { code = 0; blank = 0
+           if (match(l, /^ *([-*+]|[0-9]+[.)]) +/)) list = RLENGTH
+           else if (ind == 0) list = -1
+           print }' <<<"$text" \
     | sed -E -e 's/`([^`]*)`/\1/g' -e 's#https?://[^ )>]*# a link #g' \
              -e 's/^[[:space:]]*([#>]+|[-*+]|[0-9]+\.)[[:space:]]+//' \
              -e 's/(\*\*|__|\*)//g' -e 's/\|/ /g' -e 's/(::|_)/ /g' \

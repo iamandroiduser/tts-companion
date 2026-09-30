@@ -284,7 +284,7 @@ def speak_inline(line, hard=None):
         s = s.replace(k, f" {v} ")
     for k, v in SYMBOLS.items():
         s = s.replace(k, v)
-    s = re.sub(r"\s->\s|\s=>\s", " to ", s)
+    s = re.sub(r"\s*(?:->|=>)\s*", " to ", s)                          # a -> b, a->b, a=>b
     s = re.sub(r"(?<=\w)\s+=\s+(?=\w)", " equals ", s)                    # distance = 300000
     s = re.sub(r"(?<=[\w)])\s*<=\s*(?=[\w(])", " less than or equal to ", s)   # comparisons in prose
     s = re.sub(r"(?<=[\w)])\s*>=\s*(?=[\w(])", " greater than or equal to ", s)
@@ -340,9 +340,12 @@ def fence_end(lines, i):
     first = unquote(lines[i]) if quoted else lines[i]
     indent = len(first) - len(first.lstrip())
     mark = FENCE_RE.match(first.strip()).group(1)
-    # Markdown: the closing fence may be indented at most 3 columns (past the
-    # opening fence's own indentation); a deeper ``` is part of the code.
-    closing = re.compile(rf"^ {{0,{indent + 3}}}{re.escape(mark[0])}{{{len(mark)},}}\s*$")
+    # Markdown: the closing fence may be indented at most 3 columns past its
+    # container; a deeper ``` is part of the code. A fence indented 0-3 is at the
+    # top level (or in a list item, whose text starts within those 3 columns);
+    # one indented 4+ must sit in a container that starts where the fence does.
+    base = indent if indent > 3 else 0
+    closing = re.compile(rf"^ {{0,{base + 3}}}{re.escape(mark[0])}{{{len(mark)},}}\s*$")
     j = i + 1
     while j < len(lines):
         if quoted and not lines[j].lstrip().startswith(">"):
@@ -496,18 +499,24 @@ def speechify(md, blocks=None):
             else:
                 cue("Equation on screen.", "equation", [text])
             continue
-        if "|" in t and i + 1 < len(lines) and TABLE_DELIM_RE.match(lines[i + 1]):   # table
+        # tables, also inside a > quote (only the table text goes into the block)
+        quoted = t.startswith(">")
+        row = (lambda l: unquote(l) if l.lstrip().startswith(">") else None) if quoted else (lambda l: l)
+        ut = unquote(t).strip() if quoted else t
+        nxt = row(lines[i + 1]) if i + 1 < len(lines) else None
+        if "|" in ut and nxt is not None and TABLE_DELIM_RE.match(nxt):   # table
             start = i
             i += 2
-            while i < len(lines) and is_table_row(lines[i]):
+            while i < len(lines) and row(lines[i]) is not None and is_table_row(row(lines[i])):
                 i += 1
-            cue("Table on screen.", "table", lines[start:i])
+            cue("Table on screen.", "table", [row(l) for l in lines[start:i]])
             continue
-        if t.startswith("|") and t.endswith("|"):         # pipe rows without a delimiter row
+        if ut.startswith("|") and ut.endswith("|") and len(ut) > 1:   # pipe rows without a delimiter row
             start = i
-            while i < len(lines) and lines[i].strip().startswith("|") and is_table_row(lines[i]):
+            while i < len(lines) and row(lines[i]) is not None and row(lines[i]).strip().startswith("|") \
+                    and is_table_row(row(lines[i])):
                 i += 1
-            cue("Table on screen.", "table", lines[start:i])
+            cue("Table on screen.", "table", [row(l) for l in lines[start:i]])
             continue
         if is_diagram_line(t):                             # ASCII / box diagram
             start, end = i, i
