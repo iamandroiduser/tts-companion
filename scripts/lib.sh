@@ -85,7 +85,49 @@ EOF
 }
 
 # ---- the speech currently playing (shared by tts-speak.sh and tts-ctl.sh) ----
-TTS_PIDFILE="${TMPDIR:-/tmp}/tts-companion-$(id -u).pid"
+# Kept in a directory only this user can write (not a guessable path in a shared
+# /tmp, where another user could plant a symlink): $XDG_RUNTIME_DIR, else ~/.cache.
+TTS_STATE_DIR="${XDG_RUNTIME_DIR:-$HOME/.cache}/tts-companion"
+[[ -d "$TTS_STATE_DIR" ]] || { mkdir -p "${TTS_STATE_DIR%/*}" && mkdir -m 700 "$TTS_STATE_DIR"; } 2>/dev/null
+TTS_PIDFILE="$TTS_STATE_DIR/speaking.pid"
+
+# tts_lock DIR [TRIES] [STALE_MIN] — take a mkdir lock recording our pid, retrying
+# every 50 ms. A lock is taken over only when its recorded owner is dead (or it has
+# no owner after STALE_MIN minutes), re-checked under DIR.reclaim so two waiters
+# can't both reclaim it and delete a lock someone else has just taken.
+tts_lock() {
+  local dir="$1" tries="${2:-100}" stale="${3:-1}" n owner
+  for ((n = 0; n < tries; n++)); do
+    if mkdir "$dir" 2>/dev/null; then echo "$$" > "$dir/pid"; return 0; fi
+    if tts_lock_is_stale "$dir" "$stale"; then
+      if mkdir "$dir.reclaim" 2>/dev/null; then
+        tts_lock_is_stale "$dir" "$stale" && rm -rf "$dir"
+        if mkdir "$dir" 2>/dev/null; then                 # take it while still holding .reclaim
+          echo "$$" > "$dir/pid"; rmdir "$dir.reclaim" 2>/dev/null; return 0
+        fi
+        rmdir "$dir.reclaim" 2>/dev/null
+      fi
+      # a reclaimer that died mid-way leaves DIR.reclaim behind
+      [[ -n "$(find "$dir.reclaim" -maxdepth 0 -mmin +1 2>/dev/null)" ]] && rmdir "$dir.reclaim" 2>/dev/null
+    fi
+    sleep 0.05
+  done
+  return 1
+}
+tts_lock_is_stale() {
+  local owner
+  owner=$(cat "$1/pid" 2>/dev/null)
+  if [[ "$owner" =~ ^[0-9]+$ ]]; then
+    ! kill -0 "$owner" 2>/dev/null
+  else
+    [[ -d "$1" && -n "$(find "$1" -maxdepth 0 -mmin "+$2" 2>/dev/null)" ]]
+  fi
+}
+# Release a lock only if we still own it.
+tts_unlock() {
+  [[ "$(cat "$1/pid" 2>/dev/null)" == "${2:-$$}" ]] && rm -rf "$1"
+  return 0
+}
 
 tts_descendants() {
   local c

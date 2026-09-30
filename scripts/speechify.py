@@ -51,8 +51,12 @@ SYMBOLS = {
     "…": "...", "–": " - ", "—": ", ", "&": " and ",
 }
 SUBSCRIPTS = str.maketrans("₀₁₂₃₄₅₆₇₈₉₊₋", "0123456789+-")
-SUPERSCRIPTS = {"²": "^2", "³": "^3", "¹": "^1", "⁰": "^0", "⁴": "^4", "⁵": "^5",
-                "⁶": "^6", "⁷": "^7", "⁸": "^8", "⁹": "^9", "ⁿ": "^n", "⁻¹": "^-1"}
+SUPER_CHARS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹ⁿⁱ⁻⁺", "0123456789ni-+")
+
+
+def superscripts_to_caret(s):
+    """x⁻¹ -> x^-1, 10⁴ -> 10^4: a whole run of superscripts becomes one exponent."""
+    return re.sub(r"[⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹ⁿⁱ]+", lambda m: "^" + m.group(0).translate(SUPER_CHARS), s)
 LATEX = {
     "cdot": " times ", "times": " times ", "div": " divided by ", "pm": " plus or minus ",
     "leq": " less than or equal to ", "le": " less than or equal to ",
@@ -116,13 +120,14 @@ def speak_chem(token):
 # ------------------------------------------------------------ math
 def _power(m):
     exp = m.group(1).strip()
+    if exp.startswith("-"):
+        exp = "minus " + exp[1:]
     return {"2": " squared ", "3": " cubed "}.get(exp, f" to the power of {exp} ")
 
 
 def speak_math(s):
     """Read a short equation / LaTeX fragment aloud."""
-    for k, v in SUPERSCRIPTS.items():
-        s = s.replace(k, v)
+    s = superscripts_to_caret(s)
     s = s.translate(SUBSCRIPTS)
     # LaTeX structures (innermost braces first, repeat for light nesting)
     for _ in range(4):
@@ -238,8 +243,7 @@ def speak_inline(line):
                lambda m: stash(speak_math(m.group(1))) if not re.fullmatch(r"[\d.,]+", m.group(1)) else m.group(0), s)
     s = re.sub(r"https?://\S+|www\.\S+", " a link ", s)
     s = s.translate(SUBSCRIPTS)                                        # H₂O -> H2O
-    for k, v in SUPERSCRIPTS.items():                                  # 10⁴ -> 10^4
-        s = s.replace(k, v)
+    s = superscripts_to_caret(s)                                       # 10⁴ -> 10^4
     # emphasis / strikethrough markers
     s = re.sub(r"(\*\*|__|~~)(?=\S)(.+?)(?<=\S)\1", r"\2", s)
     s = re.sub(r"(?<![\w*])\*(?=\S)([^*\n]+?)(?<=\S)\*(?![\w*])", r"\1", s)
@@ -284,7 +288,8 @@ def speechify(md, blocks=None):
     """Return speakable text. If `blocks` is a list, hard blocks are appended to it
     and left in the text as placeholders for resolve_blocks()."""
     out = []
-    lines = md.replace("\r\n", "\n").split("\n")
+    md = re.sub(r"<!--.*?(?:-->|$)", "", md.replace("\r\n", "\n"), flags=re.S)  # incl. multi-line / unclosed
+    lines = md.split("\n")
     i = 0
 
     def cue(text, kind=None, body=None):
@@ -338,22 +343,22 @@ def speechify(md, blocks=None):
             cue("Table on screen.", "table", lines[start:i])
             continue
         if is_diagram_line(t):                             # ASCII / box diagram
-            start = i
-            while i < len(lines) and (is_diagram_line(lines[i]) or (
-                    lines[i].strip() and i + 1 < len(lines) and is_diagram_line(lines[i + 1]))):
-                i += 1
-            if i - start >= 2:
-                cue("Diagram on screen.", "diagram (text art)", lines[start:i])
-            if i == start:
-                i += 1
-            continue
+            start, end = i, i
+            while end < len(lines) and (is_diagram_line(lines[end]) or (
+                    lines[end].strip() and end + 1 < len(lines) and is_diagram_line(lines[end + 1]))):
+                end += 1
+            if end - start >= 2 or any(ch in BOX_CHARS for ch in t):
+                cue("Diagram on screen.", "diagram (text art)", lines[start:end])
+                i = max(end, start + 1)
+                continue
+            # a single symbol-heavy line such as "a -> b" is ordinary text: speak it
         i += 1
         if not t or re.fullmatch(r"[-*_=]{3,}", t) or t.startswith("<!--"):
             continue
         t = re.sub(r"^(#{1,6}|>+)\s*", "", t)             # heading / quote
         t = re.sub(r"^([-*+]|\d+[.)])\s+(\[[ xX]\]\s*)?", "", t)  # list item / checkbox
         spoken = speak_inline(t)
-        if spoken:
+        if re.search(r"\w", spoken):                       # nothing but punctuation: skip
             out.append(end_sentence(spoken))
     return clean_ws(" ".join(out))
 

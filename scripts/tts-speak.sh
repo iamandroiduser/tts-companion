@@ -23,31 +23,22 @@ esac
 
 [[ -z "${text//[[:space:]]/}" ]] && exit 0
 
-# Don't talk over ourselves: stop the previous run of *this* script (tracked by
-# pid file) and its players. Never pattern-match other users' processes. Done
-# before the text is prepared, so a new reply or prompt also cancels a
-# smart-speech model call that is still running.
 PIDFILE="$TTS_PIDFILE"
-# Serialize the hand-off (not the speech) so two hooks firing at once can't both
-# miss each other; a lock left by a crashed run is taken over after ~1s.
 HANDOFF="$PIDFILE.lock"
-for _ in {1..20}; do mkdir "$HANDOFF" 2>/dev/null && break; sleep 0.05; done
-if old=$(tts_current_pid) && [[ "$old" != "$$" ]]; then
-  tts_signal TERM "$old"
-fi
-echo "$$" > "$PIDFILE" 2>/dev/null
-rmdir "$HANDOFF" 2>/dev/null
 
 # Slow steps run as background jobs that we `wait` for: bash interrupts `wait`
 # as soon as a signal arrives, so a newer reply, `tts-companion stop`, or your
 # next prompt takes effect at once (a foreground command would delay the trap
-# until it finished). Temp files are created here so cleanup sees them all.
-TMP=$(mktemp "${TMPDIR:-/tmp}/tts-companion.XXXXXX") || exit 0
+# until it finished). Temp files live in a private per-run directory inside the
+# user-only state dir, created here so cleanup sees them all.
+TMPD=$(mktemp -d "$TTS_STATE_DIR/run.XXXXXX") || exit 0
+TMP="$TMPD/speech"
 cleanup() {
-  rm -f "$TMP" "$TMP.txt" "$TMP.wav" "$TMP.mp3" 2>/dev/null
+  rm -rf "$TMPD" 2>/dev/null
   [[ "$(cat "$PIDFILE" 2>/dev/null)" == "$$" ]] && rm -f "$PIDFILE"
 }
 on_term() {
+  tts_unlock "$HANDOFF"
   [[ -n "${JOB:-}" ]] && kill -TERM -- "-$JOB" 2>/dev/null   # the job's whole process group
   # shellcheck disable=SC2046
   kill $(tts_descendants $$) 2>/dev/null
@@ -59,6 +50,19 @@ set -m    # each background job gets its own process group (see on_term)
 # With job control, `wait` also returns when the job is paused (tts-companion
 # pause), so keep waiting until it has really finished.
 wait_job() { while :; do wait "$JOB"; kill -0 "$JOB" 2>/dev/null || break; done; }
+
+# Don't talk over ourselves: stop the previous run of *this* script (tracked by
+# pid file) and its players. Never pattern-match other users' processes. Done
+# before the text is prepared, so a new reply or prompt also cancels a
+# smart-speech model call that is still running. The hand-off is serialized by
+# a short lock (not held while speaking) so two hooks firing at once can't both
+# miss each other.
+tts_lock "$HANDOFF" 100 || { debug "hand-off lock busy; not speaking"; exit 0; }
+if old=$(tts_current_pid) && [[ "$old" != "$$" ]]; then
+  tts_signal TERM "$old"
+fi
+echo "$$" > "$PIDFILE" 2>/dev/null
+tts_unlock "$HANDOFF"
 
 # Make the reply speakable (scripts/speechify.py): code blocks, tables and
 # diagrams become a short "... on screen" cue; inline code, equations, chemical
@@ -73,14 +77,19 @@ if command -v python3 >/dev/null 2>&1; then
   JOB=$!; wait_job
   text=$(cat "$TMP.txt")
 else
-  text=$(awk 'BEGIN{c=0} /^[[:space:]]*```/{if(!c)print "Code block on screen."; c=!c; next} !c{print}' <<<"$text" \
+  text=$(awk '{ t=$0; sub(/^[[:space:]]+/, "", t) }
+             !f && (t ~ /^```/ || t ~ /^~~~/) { f=substr(t,1,3); print "Code block on screen."; next }
+             f && index(t, f) == 1 { f=""; next }
+             !f { print }' <<<"$text" \
     | sed -E -e 's/`([^`]*)`/\1/g' -e 's#https?://[^ )>]*# a link #g' \
              -e 's/^[[:space:]]*([#>]+|[-*+]|[0-9]+\.)[[:space:]]+//' \
              -e 's/(\*\*|__|\*)//g' -e 's/\|/ /g' -e 's/(::|_)/ /g' \
     | tr '\n' ' ' | tr -s ' ')
-  if (( MAX_CHARS > 0 && ${#text} > MAX_CHARS )); then
-    text="${text:0:MAX_CHARS}"
-    text="${text% *}. The rest is on screen."
+  if (( MAX_CHARS > 0 && ${#text} > MAX_CHARS )); then     # stop at a sentence end if one is close
+    cut="${text:0:MAX_CHARS}"
+    sentence="${cut%[.!?] *}"
+    if (( ${#sentence} >= MAX_CHARS * 2 / 5 && ${#sentence} < ${#cut} )); then cut="$sentence"; else cut="${cut% *}"; fi
+    text="$cut. The rest is on screen."
   fi
 fi
 [[ -z "${text// /}" ]] && exit 0
@@ -104,11 +113,11 @@ play_file() {
 # Pick the configured voice, else the default voice, else any installed voice.
 piper_model() {
   local v m
-  for v in "$PIPER_VOICE" "$TTS_DEFAULT_VOICE"; do
-    [[ -f "$PIPER_ROOT/$v.onnx" ]] && { echo "$PIPER_ROOT/$v.onnx"; return 0; }
+  for v in "$PIPER_VOICE" "$TTS_DEFAULT_VOICE"; do            # a voice needs both files
+    [[ -f "$PIPER_ROOT/$v.onnx" && -f "$PIPER_ROOT/$v.onnx.json" ]] && { echo "$PIPER_ROOT/$v.onnx"; return 0; }
   done
   for m in "$PIPER_ROOT"/*.onnx; do
-    [[ -f "$m" ]] && { echo "$m"; return 0; }
+    [[ -f "$m" && -f "$m.json" ]] && { echo "$m"; return 0; }
   done
   return 1
 }
