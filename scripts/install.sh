@@ -9,6 +9,18 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 tts_load_config
 
+# On exit, however early: record the result for the SessionStart retry backoff
+# (when bootstrap started us) and release the install lock if we own it.
+lock="$PIPER_ROOT/.install.lock"
+finish() {
+  local rc=$1
+  if [[ -n "${TTS_FAILED_MARKER:-}" ]]; then
+    if (( rc == 0 )); then rm -f "$TTS_FAILED_MARKER"; else touch "$TTS_FAILED_MARKER"; fi
+  fi
+  tts_unlock "$lock"                       # only if it is ours (see tts_unlock)
+}
+trap 'finish $?' EXIT
+
 FORCE=0
 [[ "${1:-}" == "--force" ]] && { FORCE=1; shift; }
 VOICE="${1:-$PIPER_VOICE}"
@@ -35,7 +47,6 @@ esac
 mkdir -p "$ROOT"
 # One installer at a time: a manual run takes the same lock the background
 # worker holds (the worker, which already owns it, sets TTS_INSTALL_LOCKED=1).
-lock="$ROOT/.install.lock"
 if [[ "${TTS_INSTALL_LOCKED:-0}" != 1 ]]; then
   echo ">> Waiting for any other install to finish..."
   tts_lock "$lock" 12000 5 || die "another install is still running (see $ROOT/install.log)"
@@ -55,9 +66,9 @@ restore_voice() {
   return 0
 }
 # On any exit, an old bin/ still parked in $tmp means the new one never landed: put it back.
-trap '[[ -d "$tmp/bin.old" && ! -e "$ROOT/bin" ]] && mv "$tmp/bin.old" "$ROOT/bin"
+trap 'rc=$?; [[ -d "$tmp/bin.old" && ! -e "$ROOT/bin" ]] && mv "$tmp/bin.old" "$ROOT/bin"
       restore_voice
-      rm -rf "$tmp"; [[ "${TTS_INSTALL_LOCKED:-0}" == 1 ]] || tts_unlock "$lock"' EXIT
+      rm -rf "$tmp"; finish $rc' EXIT
 trap 'exit 1' TERM INT HUP    # so the EXIT trap (rollback, cleanup) also runs when killed
 
 # Download to a temp dir first, then move into place, so an interrupted

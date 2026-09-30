@@ -22,10 +22,11 @@ if [[ "${1:-}" == "--worker" ]]; then
     sleep 0.05
   done
   [[ "$(cat "$lock/pid" 2>/dev/null)" == "$TTS_SELF" ]] || exit 0
-  trap 'tts_unlock "$lock"' EXIT
   echo "=== $(date) installing $PIPER_VOICE into $PIPER_ROOT"
-  if TTS_INSTALL_LOCKED=1 bash "$HERE/install.sh" "$PIPER_VOICE"; then rm -f "$failed"; else touch "$failed"; fi
-  exit 0
+  # Become the installer (exec: same process, same pid and start time), so the
+  # process doing the install is the one that owns the lock; it releases the
+  # lock and records success / failure itself when it exits.
+  exec env TTS_INSTALL_LOCKED=1 TTS_FAILED_MARKER="$failed" bash "$HERE/install.sh" "$PIPER_VOICE"
 fi
 
 tts_write_conf_template 2>/dev/null

@@ -5,10 +5,12 @@
 # Contract: never block Claude Code. Always exit 0.
 # Set TTS_DEBUG=1 to log which engine ran to stderr.
 
-# When this run started, to the millisecond, taken first thing. Linux has exact
-# process start times in /proc; elsewhere (macOS) ps only gives whole seconds, so
-# this orders runs that start close together (see tts_started_after).
-[[ -r /proc/$$/stat ]] || MY_HIRES=$(perl -MTime::HiRes=time -e 'printf "%.3f", time' 2>/dev/null)
+# When this run started, finely, taken first thing: it orders runs that start
+# close together (see tts_started_after). Linux's /proc start times count clock
+# ticks (two runs can share one); macOS's ps gives whole seconds. GNU date gives
+# nanoseconds; elsewhere perl (ships with macOS) gives milliseconds.
+MY_HIRES=$(date +%s.%N 2>/dev/null)
+[[ "$MY_HIRES" =~ ^[0-9]+\.[0-9]+$ ]] || MY_HIRES=$(perl -MTime::HiRes=time -e 'printf "%.6f", time' 2>/dev/null)
 
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 0
