@@ -1,0 +1,14 @@
+{
+  "name": "iamandroiduser-plugins",
+  "description": "Plugins by iamandroiduser",
+  "owner": {
+    "name": "iamandroiduser"
+  },
+  "plugins": [
+    {
+      "name": "tts-companion",
+      "source": "./",
+      "description": "Free offline text-to-speech for Claude Code — speaks replies and notifications (Piper neural voices)"
+    }
+  ]
+}

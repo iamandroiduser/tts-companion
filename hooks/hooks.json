@@ -1,0 +1,28 @@
+{
+  "description": "Speak assistant replies (Stop) and attention alerts (Notification)",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/tts-speak.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt|idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/tts-speak.sh",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
