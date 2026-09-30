@@ -358,8 +358,9 @@ def fence_end(lines, i):
 
 def strip_comments(md):
     """Remove HTML comments (multi-line or unclosed ones too) from prose. A `<!--`
-    inside fenced or inline code is code, not a comment; inside an open comment,
-    everything up to `-->` is hidden, fences included."""
+    inside fenced code or an inline code span (which may run over several lines
+    of a paragraph) is code, not a comment; inside an open comment, everything up
+    to `-->` is hidden, fences included."""
     lines, out, i, hidden = md.split("\n"), [], 0, False
     while i < len(lines):
         line = lines[i]
@@ -367,20 +368,29 @@ def strip_comments(md):
             if "-->" not in line:
                 i += 1
                 continue
-            line, hidden = line.split("-->", 1)[1], False
-        elif FENCE_RE.match(unquote(line).strip()):       # a code block: copy it as is
+            lines[i], hidden = line.split("-->", 1)[1], False   # the rest of the line is prose again
+            continue
+        if FENCE_RE.match(unquote(line).strip()):         # a code block: copy it as is
             _, j = fence_end(lines, i)
             out.extend(lines[i:j])
             i = j
             continue
+        if not line.strip():
+            out.append(line)
+            i += 1
+            continue
+        j = i                                             # a paragraph: up to a blank line or fence
+        while j < len(lines) and lines[j].strip() and (j == i or not FENCE_RE.match(unquote(lines[j]).strip())):
+            j += 1
         code = []
-        line = re.sub(r"(`+)(?!`).+?(?<!`)\1(?!`)",
-                      lambda m: code.append(m.group(0)) or f"\x02{len(code) - 1}\x02", line)
-        line = re.sub(r"<!--.*?-->", "", line)
-        if "<!--" in line:
-            line, hidden = line.split("<!--", 1)[0], True
-        out.append(re.sub(r"\x02(\d+)\x02", lambda m: code[int(m.group(1))], line))
-        i += 1
+        text = re.sub(r"(`+)(?!`).+?(?<!`)\1(?!`)",
+                      lambda m: code.append(m.group(0)) or f"\x02{len(code) - 1}\x02",
+                      "\n".join(lines[i:j]), flags=re.S)
+        text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+        if "<!--" in text:
+            text, hidden = text.split("<!--", 1)[0], True
+        out.append(re.sub(r"\x02(\d+)\x02", lambda m: code[int(m.group(1))], text))
+        i = j
     return "\n".join(out)
 
 
@@ -533,7 +543,7 @@ def speechify(md, blocks=None):
                 continue
             # a single symbol-heavy line such as "a -> b" is ordinary text: speak it
         i += 1
-        if not t or re.fullmatch(r"[-*_=]{3,}", t) or t.startswith("<!--"):
+        if not t or re.fullmatch(r"[-*_=]{3,}", t):
             flush()                                        # paragraph break
             continue
         heading = re.match(r"^#{1,6}\s", t)

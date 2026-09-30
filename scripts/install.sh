@@ -84,6 +84,7 @@ piper_release_bin() {
 piper_owned_bin() {
   local b="$ROOT/bin" e
   [[ ! -e "$b" && ! -L "$b" ]] && return 0
+  [[ -L "$b" ]] && return 1                        # a link is the user's layout: never replace it
   # A directory we can't list could hold anything: never treat it as empty.
   [[ -d "$b" && -r "$b" && -x "$b" ]] || return 1
   for e in "$b"/* "$b"/.[!.]* "$b"/..?*; do        # any entry at all, whatever its name
