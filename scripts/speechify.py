@@ -294,9 +294,7 @@ def speechify(md, blocks=None):
 
     def cue(text, kind=None, body=None):
         if blocks is not None and kind:
-            context = next((o for o in reversed(out) if "\x01" not in o), "")
-            blocks.append({"kind": kind, "cue": text, "content": "\n".join(body).strip(),
-                           "context": context})
+            blocks.append({"kind": kind, "cue": text, "content": "\n".join(body).strip()})
             out.append(f"\x01{len(blocks) - 1}\x01")
         elif not out or out[-1] != text:
             out.append(text)
@@ -377,8 +375,8 @@ def truncate(text, limit):
 # ------------------------------------------------------------ smart mode
 SMART_SYSTEM = """You prepare parts of a chat reply for a text-to-speech voice. \
 The listener can also see the screen. You get numbered items that were shown \
-on screen (code, tables, diagrams, equations), each with the sentence that \
-came before it. For each item decide whether hearing about it helps.
+on screen (code, tables, diagrams, equations). For each item decide whether \
+hearing about it helps.
 - If it helps, write at most two short plain-English sentences (under 40 \
 words) giving what it is and its key point: what the code does, the main \
 takeaway of the table, what the diagram shows, or the equation in words.
@@ -404,8 +402,7 @@ def describe_blocks(blocks):
     parts = []
     for n, b in enumerate(blocks, 1):
         content = b["content"][:4000]
-        parts.append(f'<item n="{n}" kind="{b["kind"]}">\n'
-                     f'<before>{b["context"][:300]}</before>\n<content>\n{content}\n</content>\n</item>')
+        parts.append(f'<item n="{n}" kind="{b["kind"]}">\n<content>\n{content}\n</content>\n</item>')
     prompt = "\n\n".join(parts)
     env = dict(os.environ, TTS_COMPANION_INNER="1")      # our own hooks stay quiet
     cmd = [claude, "-p", "--model", os.environ.get("SMART_SPEECH_MODEL") or "haiku",
