@@ -47,16 +47,21 @@ trap '[[ -d "$tmp/bin.old" && ! -e "$ROOT/bin" ]] && mv "$tmp/bin.old" "$ROOT/bi
 
 # Download to a temp dir first, then move into place, so an interrupted
 # download never leaves a half-installed binary or voice behind.
+# $ROOT/bin is replaced as a whole, so only ever touch one that is ours: empty,
+# marked by this installer, or an unmodified Piper release (older installs).
+piper_owned_bin() {
+  local b="$ROOT/bin"
+  [[ ! -e "$b" ]] || [[ -z "$(ls -A "$b")" ]] || [[ -f "$b/.tts-companion" ]] \
+    || [[ -x "$b/piper" && -d "$b/espeak-ng-data" && -n "$(ls "$b"/libpiper_phonemize* 2>/dev/null)" ]]
+}
 if [[ "$FORCE" == 1 || ! -x "$ROOT/bin/piper" ]]; then
-  # $ROOT/bin is replaced wholesale, so refuse unless it is empty or already Piper's.
-  if [[ -d "$ROOT/bin" && ! -x "$ROOT/bin/piper" && -n "$(ls -A "$ROOT/bin")" ]]; then
-    die "$ROOT/bin exists and is not a Piper install; set PIPER_ROOT to a dedicated directory"
-  fi
+  piper_owned_bin || die "$ROOT/bin is not a Piper install made by this plugin; set PIPER_ROOT to a dedicated directory"
   echo ">> Installing Piper ($asset) into $ROOT/bin"
   mkdir -p "$tmp/bin"
   curl -fsSL "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/$asset" \
     | tar -xz -C "$tmp/bin" --strip-components=1
   [[ -x "$tmp/bin/piper" ]] || die "Piper archive did not contain bin/piper"
+  echo "installed by tts-companion; this whole directory is replaced on reinstall" > "$tmp/bin/.tts-companion"
   # Keep the old bin/ as a rollback until the new one is in place.
   [[ -d "$ROOT/bin" ]] && mv "$ROOT/bin" "$tmp/bin.old"
   if ! mv "$tmp/bin" "$ROOT/bin"; then

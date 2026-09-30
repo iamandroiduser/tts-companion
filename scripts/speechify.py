@@ -211,6 +211,13 @@ def speak_code(code):
     symbols = sum(1 for ch in c if not (ch.isalnum() or ch in " ._:/-<>+#~$*()"))
     if len(c) > 40 or symbols > 2 or c.count(" ") > 4:
         return "code"
+    tag = re.fullmatch(r"</?([A-Za-z][\w-]*)[^<>]*/?>", c)                # `<code>` -> "code tag"
+    if tag:
+        return f"{tag.group(1)} tag"
+    c = re.sub(r"\s<=\s", " less than or equal to ", c)
+    c = re.sub(r"\s>=\s", " greater than or equal to ", c)
+    c = re.sub(r"\s<\s", " less than ", c)                                   # x < y, not vector<int>
+    c = re.sub(r"\s>\s", " greater than ", c)
     c = re.sub(r"^([A-Za-z_][\w.]*)=(?=\S)", r"\1 to ", c)       # KEY=value
     c = re.sub(r"\bC\+\+", "C plus plus", c)
     c = re.sub(r"\bC#", "C sharp", c)
@@ -235,18 +242,20 @@ def speak_inline(line, hard=None):
     """Speak one line or paragraph. `hard(kind, content, cue)` turns something too
     long to read (a long inline equation) into a smart-speech block placeholder."""
     s = line
-    s = re.sub(r"!\[([^\]]*)\]\([^)]*\)", lambda m: f"image, {m.group(1)}" if m.group(1) else "image", s)
-    s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)                     # links -> text
-    s = HTML_TAG_RE.sub(" ", s)                                         # <strong>x</strong> -> x
-    s = html.unescape(s)                                                # &lt; -> <  (after tags: &lt;div&gt; stays text)
-    s = re.sub(r"<https?://[^>]+>", " a link ", s)
-    # inline code / math, protected from later passes with placeholders
+    # inline code / math, protected from later passes with placeholders; code
+    # goes first so HTML and link cleanup can't eat `<code>` or `[x](y)` inside it
     keep = []
 
     def stash(text):
         keep.append(text)
         return f"\x00{len(keep) - 1}\x00"
-    s = re.sub(r"``\s?(.+?)\s?``|`([^`\n]+)`", lambda m: stash(speak_code(m.group(1) or m.group(2))), s)
+    s = re.sub(r"``\s?(.+?)\s?``|`([^`\n]+)`",
+               lambda m: stash(speak_code(html.unescape(m.group(1) or m.group(2)))), s)
+    s = re.sub(r"!\[([^\]]*)\]\([^)]*\)", lambda m: f"image, {m.group(1)}" if m.group(1) else "image", s)
+    s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)                     # links -> text
+    s = HTML_TAG_RE.sub(" ", s)                                         # <strong>x</strong> -> x
+    s = html.unescape(s)                                                # &lt; -> <  (after tags: &lt;div&gt; stays text)
+    s = re.sub(r"<https?://[^>]+>", " a link ", s)
     def display_math(m):
         body = m.group(1) or m.group(2)
         if len(body) <= 150:
@@ -292,9 +301,9 @@ def is_diagram_line(line):
     t = line.strip()
     if not t:
         return False
-    if any(ch in BOX_CHARS for ch in t):
-        return True
     alnum = sum(ch.isalnum() for ch in t)
+    if any(ch in BOX_CHARS for ch in t) and alnum / len(t) < 0.5:   # not a sentence with one └ in it
+        return True
     return len(t) >= 4 and alnum / len(t) < 0.35 and not re.fullmatch(r"[-*_=]{3,}", t)
 
 
