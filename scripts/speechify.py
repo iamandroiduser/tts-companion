@@ -330,13 +330,17 @@ def unquote(line):
 def fence_end(lines, i):
     """(end of body, next line) for the fenced block opening at lines[i], also inside a quote."""
     quoted = lines[i].lstrip().startswith(">")
-    mark = FENCE_RE.match(unquote(lines[i]).strip()).group(1)
-    closing = re.compile(rf"^{re.escape(mark[0])}{{{len(mark)},}}\s*$")
+    first = unquote(lines[i]) if quoted else lines[i]
+    indent = len(first) - len(first.lstrip())
+    mark = FENCE_RE.match(first.strip()).group(1)
+    # Markdown: the closing fence may be indented at most 3 columns (past the
+    # opening fence's own indentation); a deeper ``` is part of the code.
+    closing = re.compile(rf"^ {{0,{indent + 3}}}{re.escape(mark[0])}{{{len(mark)},}}\s*$")
     j = i + 1
     while j < len(lines):
         if quoted and not lines[j].lstrip().startswith(">"):
             return j, j                                   # the quote ended, and the block with it
-        if closing.match(unquote(lines[j]).strip() if quoted else lines[j].strip()):
+        if closing.match((unquote(lines[j]) if quoted else lines[j]).expandtabs(4)):
             return j, j + 1
         j += 1
     return j, j
@@ -435,7 +439,11 @@ def speechify(md, blocks=None):
                           or not re.search(r"</code\s*>", t, re.I)):
             close = re.compile(rf"</{html_code.group(1)}\s*>", re.I)
             end = i
-            while end < len(lines) and not (m := close.search(lines[end])):
+            m = None
+            while end < len(lines):                  # (no := : keep Python 3.7 working)
+                m = close.search(lines[end])
+                if m:
+                    break
                 end += 1
             if end < len(lines):               # text after the closing tag is reply prose
                 raw = "\n".join(lines[i:end] + [lines[end][:m.end()]])
@@ -533,9 +541,10 @@ def truncate(text, limit):
     """Cut at a sentence end within the limit and say so, instead of mid-sentence."""
     if limit <= 0 or len(text) <= limit:
         return text
-    cut = text[:limit]
+    room = max(1, limit - len(TRUNCATION_NOTE))     # the note counts toward the limit too
+    cut = text[:room]
     ends = [m.end() for m in re.finditer(r"[.!?](?=\s)", cut + " ")]
-    good = [e for e in ends if e >= limit * 0.4]
+    good = [e for e in ends if e >= room * 0.4]
     cut = cut[:good[-1]] if good else cut.rsplit(" ", 1)[0]
     return cut.rstrip() + TRUNCATION_NOTE
 

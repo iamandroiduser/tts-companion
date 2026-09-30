@@ -113,10 +113,12 @@ else
   JOB=$!; wait_job
   text=$(cat "$TMP.txt")
   if (( MAX_CHARS > 0 && ${#text} > MAX_CHARS )); then     # stop at a sentence end if one is close
-    cut="${text:0:MAX_CHARS}"
+    note=". The rest is on screen."
+    room=$(( MAX_CHARS > ${#note} ? MAX_CHARS - ${#note} : 1 ))   # the note counts toward the limit
+    cut="${text:0:room}"
     sentence="${cut%[.!?] *}"
-    if (( ${#sentence} >= MAX_CHARS * 2 / 5 && ${#sentence} < ${#cut} )); then cut="$sentence"; else cut="${cut% *}"; fi
-    text="$cut. The rest is on screen."
+    if (( ${#sentence} >= room * 2 / 5 && ${#sentence} < ${#cut} )); then cut="$sentence"; else cut="${cut% *}"; fi
+    text="$cut$note"
   fi
 fi
 [[ -z "${text// /}" ]] && exit 0

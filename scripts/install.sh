@@ -65,10 +65,13 @@ trap 'exit 1' TERM INT HUP    # so the EXIT trap (rollback, cleanup) also runs w
 # $ROOT/bin is replaced as a whole, so only ever touch one that is ours: empty,
 # marked by this installer, or an unmodified Piper release (older installs) that
 # holds nothing but the files a Piper release ships.
+# Written into the bin/ this installer creates; only this exact text marks it as ours.
+MARKER_TEXT="installed by tts-companion; this whole directory is replaced on reinstall"
 piper_release_bin() {
   local b="$1" e
   # Our own install (marker) may be half-removed; an unmarked one must look complete.
-  [[ -f "$b/.tts-companion" ]] || [[ -x "$b/piper" && -d "$b/espeak-ng-data" ]] || return 1
+  [[ -f "$b/.tts-companion" && "$(cat "$b/.tts-companion" 2>/dev/null)" == "$MARKER_TEXT" ]] \
+    || [[ -x "$b/piper" && -d "$b/espeak-ng-data" ]] || return 1
   for e in "$b"/* "$b"/.[!.]* "$b"/..?*; do      # every entry, dotfiles included
     [[ -e "$e" || -L "$e" ]] || continue
     case "${e##*/}" in
@@ -95,7 +98,7 @@ if [[ "$FORCE" == 1 || ! -x "$ROOT/bin/piper" ]]; then
   curl -fsSL "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/$asset" \
     | tar -xz -C "$tmp/bin" --strip-components=1
   [[ -x "$tmp/bin/piper" ]] || die "Piper archive did not contain bin/piper"
-  echo "installed by tts-companion; this whole directory is replaced on reinstall" > "$tmp/bin/.tts-companion"
+  echo "$MARKER_TEXT" > "$tmp/bin/.tts-companion"
   # Keep the old bin/ as a rollback until the new one is in place.
   [[ -d "$ROOT/bin" ]] && mv "$ROOT/bin" "$tmp/bin.old"
   if ! mv "$tmp/bin" "$ROOT/bin"; then
