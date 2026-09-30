@@ -7,6 +7,7 @@ tts_load_config
 shopt -s nullglob
 found=0
 for m in "$PIPER_ROOT"/*.onnx; do
+  [[ -f "$m.json" ]] || { echo ">>> $(basename "$m" .onnx): incomplete (no .onnx.json), skipped"; continue; }
   found=1
   name=$(basename "$m" .onnx)
   echo ">>> $name"

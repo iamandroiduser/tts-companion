@@ -93,6 +93,12 @@ Fe Co Ni Cu Zn Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In Sn Sb Te 
 Xe Cs Ba La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta W Re Os Ir Pt Au Hg Tl
 Pb Bi Po At Rn Fr Ra Ac Th Pa U Np Pu Am Cm Bk Cf Es Fm Md No Lr""".split())
 
+HTML_TAG_RE = re.compile(
+    r"</?(?:a|abbr|b|br|blockquote|center|code|del|details|div|em|font|h[1-6]|hr|i|img|ins|kbd|"
+    r"li|mark|ol|p|picture|pre|s|samp|small|source|span|strike|strong|sub|summary|sup|table|"
+    r"tbody|td|th|thead|tr|u|ul|var)\b[^<>]*/?>", re.I)
+TABLE_DELIM_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$|^\s*\|\s*:?-{3,}:?\s*\|\s*$")
+
 BOX_CHARS = set("─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬━┃┏┓┗┛▲▼◀▶►◄█░▒▓╭╮╯╰")
 
 
@@ -227,6 +233,7 @@ def speak_inline(line):
     s = line
     s = re.sub(r"!\[([^\]]*)\]\([^)]*\)", lambda m: f"image, {m.group(1)}" if m.group(1) else "image", s)
     s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)                     # links -> text
+    s = HTML_TAG_RE.sub(" ", s)                                         # <strong>x</strong> -> x
     s = re.sub(r"<https?://[^>]+>", " a link ", s)
     # inline code / math, protected from later passes with placeholders
     keep = []
@@ -306,7 +313,8 @@ def speechify(md, blocks=None):
             mark, lang = fence.group(1), fence.group(2).lower()
             body = []
             i += 1
-            while i < len(lines) and not lines[i].strip().startswith(mark[:3]):
+            closing = re.compile(rf"^{re.escape(mark[0])}{{{len(mark)},}}\s*$")
+            while i < len(lines) and not closing.match(lines[i].strip()):
                 body.append(lines[i])
                 i += 1
             i += 1
@@ -322,7 +330,7 @@ def speechify(md, blocks=None):
                 cue(f"{name} code on screen." if name else "Code block on screen.",
                     f"code ({lang or 'unknown language'})", body)
             continue
-        if t.startswith("$$"):                             # display math
+        if t.startswith("$$") and "$$" not in t[2:]:       # display math spanning lines
             body = [t[2:]]
             while not body[-1].rstrip().endswith("$$") and i + 1 < len(lines):
                 i += 1
@@ -334,7 +342,14 @@ def speechify(md, blocks=None):
             else:
                 cue("Equation on screen.", "equation", [text])
             continue
-        if t.startswith("|"):                              # table
+        if "|" in t and i + 1 < len(lines) and TABLE_DELIM_RE.match(lines[i + 1]):   # table
+            start = i
+            i += 2
+            while i < len(lines) and "|" in lines[i] and lines[i].strip():
+                i += 1
+            cue("Table on screen.", "table", lines[start:i])
+            continue
+        if t.startswith("|") and t.endswith("|"):         # pipe rows without a delimiter row
             start = i
             while i < len(lines) and lines[i].strip().startswith("|"):
                 i += 1
@@ -424,8 +439,8 @@ def describe_blocks(blocks):
         return {}
     result = {}
     for key, text in answers.items():
-        if not (str(key).isdigit() and isinstance(text, str)):
-            continue
+        if not (str(key).isdigit() and 1 <= int(key) <= len(blocks) and isinstance(text, str)):
+            continue                                     # ignore answers for items we didn't send
         text = text.strip()
         if not text or text.upper().rstrip(".") == "SKIP":
             continue
@@ -446,8 +461,29 @@ def main():
     md = sys.stdin.read()
     blocks = []
     text = speechify(md, blocks)
-    spoken = describe_blocks(blocks) if os.environ.get("SMART_SPEECH") == "1" else {}
+    spoken = {}
+    if os.environ.get("SMART_SPEECH") == "1":
+        wanted = audible_blocks(text, blocks, limit)
+        got = describe_blocks([blocks[n] for n in wanted])
+        spoken = {wanted[k]: v for k, v in got.items()}
     sys.stdout.write(truncate(resolve_blocks(text, blocks, spoken), limit))
+
+
+def audible_blocks(text, blocks, limit):
+    """Indexes of blocks that start before the speech limit (measured with their
+    short cues), so blocks that will be cut off anyway aren't sent to the model."""
+    if limit <= 0:
+        return list(range(len(blocks)))
+    wanted, offset, pos = [], 0, 0
+    for m in re.finditer(r"\x01(\d+)\x01", text):
+        offset += m.start() - pos
+        if offset >= limit:
+            break
+        n = int(m.group(1))
+        wanted.append(n)
+        offset += len(blocks[n]["cue"])
+        pos = m.end()
+    return wanted
 
 
 if __name__ == "__main__":

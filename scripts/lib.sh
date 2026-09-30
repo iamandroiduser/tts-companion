@@ -108,7 +108,7 @@ tts_lock() {
         rmdir "$dir.reclaim" 2>/dev/null
       fi
       # a reclaimer that died mid-way leaves DIR.reclaim behind
-      [[ -n "$(find "$dir.reclaim" -maxdepth 0 -mmin +1 2>/dev/null)" ]] && rmdir "$dir.reclaim" 2>/dev/null
+      [[ -n "$(find "$dir.reclaim" -prune -mmin +1 2>/dev/null)" ]] && rmdir "$dir.reclaim" 2>/dev/null
     fi
     sleep 0.05
   done
@@ -120,7 +120,7 @@ tts_lock_is_stale() {
   if [[ "$owner" =~ ^[0-9]+$ ]]; then
     ! kill -0 "$owner" 2>/dev/null
   else
-    [[ -d "$1" && -n "$(find "$1" -maxdepth 0 -mmin "+$2" 2>/dev/null)" ]]
+    [[ -d "$1" && -n "$(find "$1" -prune -mmin "+$2" 2>/dev/null)" ]]
   fi
 }
 # Release a lock only if we still own it.

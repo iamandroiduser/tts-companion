@@ -49,7 +49,7 @@ trap on_term TERM INT
 set -m    # each background job gets its own process group (see on_term)
 # With job control, `wait` also returns when the job is paused (tts-companion
 # pause), so keep waiting until it has really finished.
-wait_job() { while :; do wait "$JOB"; kill -0 "$JOB" 2>/dev/null || break; done; }
+wait_job() { while :; do wait "$JOB"; kill -0 "$JOB" 2>/dev/null || break; sleep 0.2; done; }
 
 # Don't talk over ourselves: stop the previous run of *this* script (tracked by
 # pid file) and its players. Never pattern-match other users' processes. Done
@@ -96,18 +96,25 @@ fi
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# Play an audio file with whatever player exists (WAV or MP3).
+# Play an audio file, trying each installed player in turn until one succeeds
+# (one may exist but be unable to reach the sound device). SKIP_APLAY=1 skips
+# aplay when it has just failed on the streaming path.
 play_file() {
-  local f="$1"
-  if   [[ "$f" == *.wav ]] && have aplay;  then aplay -q "$f"
-  elif [[ "$f" == *.wav ]] && have paplay; then paplay "$f"
-  elif [[ "$f" == *.wav ]] && have pw-play; then pw-play "$f"
-  elif have afplay; then afplay "$f"
-  elif have ffplay; then ffplay -nodisp -autoexit -loglevel quiet "$f"
-  elif have mpv;    then mpv --really-quiet --no-video "$f"
-  elif [[ "$f" == *.mp3 ]] && have mpg123; then mpg123 -q "$f"
-  else return 1
-  fi 2>/dev/null
+  local f="$1" p
+  local -a players=()
+  if [[ "$f" == *.wav ]]; then
+    [[ "${SKIP_APLAY:-0}" == 1 ]] || players+=("aplay -q")
+    players+=("paplay" "pw-play")
+  fi
+  players+=("afplay" "ffplay -nodisp -autoexit -loglevel quiet" "mpv --really-quiet --no-video")
+  [[ "$f" == *.mp3 ]] && players+=("mpg123 -q")
+  for p in "${players[@]}"; do
+    have "${p%% *}" || continue
+    # shellcheck disable=SC2086  # $p is a command plus its fixed options
+    $p "$f" 2>/dev/null && return 0
+    debug "player ${p%% *} failed; trying the next one"
+  done
+  return 1
 }
 
 # Pick the configured voice, else the default voice, else any installed voice.
@@ -133,11 +140,13 @@ speak_piper() {
     printf '%s' "$text" | "$piper" --model "$model" --output_raw 2>/dev/null \
       | aplay -q -r "${rate:-22050}" -f S16_LE -c 1 -t raw - 2>/dev/null
     local st=("${PIPESTATUS[@]}")
-    (( st[1] == 0 && st[2] == 0 ))
-    return
+    (( st[1] == 0 && st[2] == 0 )) && return 0
+    (( st[1] != 0 )) && return 1                      # piper itself failed
+    debug "aplay could not play; rendering a WAV for the other players"
+    local SKIP_APLAY=1
   fi
   f="$TMP"
-  printf '%s' "$text" | "$piper" --model "$model" --output_file "$f.wav" 2>/dev/null \
+  printf '%s' "$text" | "$piper" --model "$model" --output_file "$f.wav" >/dev/null 2>&1 \
     && play_file "$f.wav"
 }
 
