@@ -41,7 +41,9 @@ if [[ "${TTS_INSTALL_LOCKED:-0}" != 1 ]]; then
   tts_lock "$lock" 12000 5 || die "another install is still running (see $ROOT/install.log)"
 fi
 tmp=$(mktemp -d "$ROOT/.install.XXXXXX")
-trap 'rm -rf "$tmp"; [[ "${TTS_INSTALL_LOCKED:-0}" == 1 ]] || tts_unlock "$lock"' EXIT
+# On any exit, an old bin/ still parked in $tmp means the new one never landed: put it back.
+trap '[[ -d "$tmp/bin.old" && ! -e "$ROOT/bin" ]] && mv "$tmp/bin.old" "$ROOT/bin"
+      rm -rf "$tmp"; [[ "${TTS_INSTALL_LOCKED:-0}" == 1 ]] || tts_unlock "$lock"' EXIT
 
 # Download to a temp dir first, then move into place, so an interrupted
 # download never leaves a half-installed binary or voice behind.
@@ -55,8 +57,12 @@ if [[ "$FORCE" == 1 || ! -x "$ROOT/bin/piper" ]]; then
   curl -fsSL "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/$asset" \
     | tar -xz -C "$tmp/bin" --strip-components=1
   [[ -x "$tmp/bin/piper" ]] || die "Piper archive did not contain bin/piper"
-  rm -rf "${ROOT:?}/bin"
-  mv "$tmp/bin" "$ROOT/bin"
+  # Keep the old bin/ as a rollback until the new one is in place.
+  [[ -d "$ROOT/bin" ]] && mv "$ROOT/bin" "$tmp/bin.old"
+  if ! mv "$tmp/bin" "$ROOT/bin"; then
+    [[ -d "$tmp/bin.old" ]] && mv "$tmp/bin.old" "$ROOT/bin"
+    die "could not install Piper into $ROOT/bin (previous version restored)"
+  fi
 else
   echo ">> Piper already installed in $ROOT/bin"
 fi

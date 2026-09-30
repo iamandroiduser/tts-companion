@@ -21,6 +21,7 @@ Env:   SMART_SPEECH=1, SMART_SPEECH_MODEL (default haiku),
        SMART_SPEECH_TIMEOUT seconds (default 25)
 Standard library only.
 """
+import html
 import json
 import os
 import re
@@ -237,6 +238,7 @@ def speak_inline(line, hard=None):
     s = re.sub(r"!\[([^\]]*)\]\([^)]*\)", lambda m: f"image, {m.group(1)}" if m.group(1) else "image", s)
     s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)                     # links -> text
     s = HTML_TAG_RE.sub(" ", s)                                         # <strong>x</strong> -> x
+    s = html.unescape(s)                                                # &lt; -> <  (after tags: &lt;div&gt; stays text)
     s = re.sub(r"<https?://[^>]+>", " a link ", s)
     # inline code / math, protected from later passes with placeholders
     keep = []
