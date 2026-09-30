@@ -155,12 +155,17 @@ tts_cancelled() {
   fi
 }
 
-# tts_started_after PID MY_START_TICKS MY_START_EPOCH — did PID start after us?
-# Clock ticks on Linux; elsewhere whole seconds, where only a clear gap counts.
+# tts_started_after PID MY_START_TICKS MY_START_EPOCH [MY_START_HIRES] — did the
+# registered speaker PID start after us? Clock ticks on Linux; elsewhere the
+# millisecond start time each run records (speaking.pid.start), else whole
+# seconds, where only a clear gap counts.
 tts_started_after() {
-  local t e
+  local t e p h
   if [[ "$2" =~ ^[0-9]+$ ]] && t=$(tts_proc_start "$1"); then
     (( t > $2 ))
+  elif [[ "$4" =~ ^[0-9]+\.[0-9]+$ ]] && read -r p h < "$TTS_PIDFILE.start" 2>/dev/null \
+       && [[ "$p" == "$1" && "$h" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    awk -v a="$h" -v b="$4" 'BEGIN { exit !(a > b) }'
   elif [[ "$3" =~ ^[0-9]+$ ]] && e=$(tts_start_epoch "$1"); then
     (( e > $3 + 1 ))
   else

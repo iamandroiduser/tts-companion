@@ -5,6 +5,11 @@
 # Contract: never block Claude Code. Always exit 0.
 # Set TTS_DEBUG=1 to log which engine ran to stderr.
 
+# When this run started, to the millisecond, taken first thing. Linux has exact
+# process start times in /proc; elsewhere (macOS) ps only gives whole seconds, so
+# this orders runs that start close together (see tts_started_after).
+[[ -r /proc/$$/stat ]] || MY_HIRES=$(perl -MTime::HiRes=time -e 'printf "%.3f", time' 2>/dev/null)
+
 # shellcheck source=scripts/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh" || exit 0
 tts_load_config
@@ -50,7 +55,7 @@ cleanup() {
   # Under the hand-off lock, so a newer run can't write its pid between our
   # check and our delete (which would leave its speech untracked).
   if tts_lock "$HANDOFF" 40; then
-    [[ "$(cat "$PIDFILE" 2>/dev/null)" == "$TTS_SELF" ]] && rm -f "$PIDFILE"
+    [[ "$(cat "$PIDFILE" 2>/dev/null)" == "$TTS_SELF" ]] && rm -f "$PIDFILE" "$PIDFILE.start"
     [[ "$(cat "$TTS_STATE_DIR/playing" 2>/dev/null)" == "$TTS_SELF" ]] && rm -f "$TTS_STATE_DIR/playing"
     tts_unlock "$HANDOFF"
   fi
@@ -97,12 +102,13 @@ fi
 if old=$(tts_current_pid) && [[ "$old" != "$$" ]]; then
   # Hooks run asynchronously: if the one speaking was started after us, we are
   # the stale one (e.g. an older hook slow to read its input). Leave it be.
-  if tts_started_after "$old" "$MY_START" "$MY_EPOCH"; then
+  if tts_started_after "$old" "$MY_START" "$MY_EPOCH" "${MY_HIRES:-}"; then
     tts_unlock "$HANDOFF"; debug "a newer reply is already speaking"; exit 0
   fi
   tts_signal TERM "$old"
 fi
 echo "$TTS_SELF" > "$PIDFILE" 2>/dev/null   # pid + start time: see tts_ident
+echo "$$ ${MY_HIRES:-}" > "$PIDFILE.start" 2>/dev/null
 tts_unlock "$HANDOFF"
 
 # Make the reply speakable (scripts/speechify.py): code blocks, tables and
