@@ -12,50 +12,88 @@ reply as `last_assistant_message` on stdin and pipes it to a speech engine.
 A Notification hook (`permission_prompt`, `idle_prompt`) speaks short alerts.
 Both run `async`, exit `0`, and never block Claude Code.
 
+A SessionStart hook installs the engine for you: on Linux, the first session
+after installing the plugin downloads the Piper binary (~26 MB) and the default
+voice, `en_GB-jenny_dioco-medium` (~63 MB). The download runs in the background.
+Until it finishes, replies use whatever is already available: `espeak-ng`, or
+`say` on macOS. There is no manual setup step.
+
 ## Install
 
-> Users no longer need two commands. This adds marketplace and installs in one step:
 ```bash
-/plugin install tts-companion --marketplace iamandroiduser/tts-companion
-```
-
-```bash
-# 1. Add the marketplace and install the plugin
-claude plugin marketplace add iamandroiduser/<repo-name>
+claude plugin marketplace add iamandroiduser/tts-companion
 claude plugin install tts-companion@iamandroiduser-plugins
-
-# 2. Install the speech engine (Piper + default voice)
-"${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/tts-companion}" # see note below
-bash scripts/install.sh          # from the plugin directory, or:
-# ~/.claude/plugins/cache/iamandroiduser-plugins/tts-companion/*/scripts/install.sh
-
-# 3. Linux deps if missing: sudo apt install curl jq alsa-utils
 ```
+
+Then start a new Claude Code session. Requirements:
+
+- `curl` and `tar` (for the one-time download)
+- An audio player: `aplay` (alsa-utils), `paplay`, `pw-play`, `ffplay` or `mpv`
+- `jq` or `python3` (to read the hook input)
+
+On Debian/Ubuntu: `sudo apt install curl jq alsa-utils`.
 
 > If you previously added a TTS hook to `~/.claude/settings.json`, remove that
-> block — hooks **merge** across settings and plugins, so both would speak twice.
+> block. Hooks **merge** across settings and plugins, so both would speak.
+
+## Where things live
+
+| What | Path |
+|---|---|
+| Settings | `~/.claude/tts.conf` (created with every option commented out) |
+| Piper binary + voices | `~/.local/share/piper/` (or `$XDG_DATA_HOME/piper`) |
+| Background install log | `~/.local/share/piper/install.log` |
+
+The scripts use the same paths whether Claude Code or you run them, so a manual
+test behaves the same as the hook.
+
+## Settings
+
+Edit `~/.claude/tts.conf`:
+
+```bash
+ENABLED=1                        # 0 mutes all speech
+ENGINE=piper                     # piper | edge | say | espeak
+PIPER_VOICE=en_GB-jenny_dioco-medium
+MAX_CHARS=400                    # longer replies are cut at a word boundary
+SPEAK_REPLIES=1                  # speak each finished reply
+SPEAK_NOTIFICATIONS=1            # speak permission / idle alerts
+AUTO_INSTALL=1                   # 0 disables the background download
+```
+
+If the configured voice isn't installed, the plugin falls back to the default
+voice, then to any installed voice. The next session start downloads the
+configured voice.
+
+Engine fallback order: `piper` → `edge` → `say` (macOS) → `espeak-ng` /
+`espeak` / `spd-say`.
 
 ## Try different voices
 
-```bash
-bash scripts/tts-try.sh     # speaks a sample in every installed voice
-```
-
-Then edit `tts.conf` (in `$CLAUDE_PLUGIN_DATA` when installed as a plugin, else
-`~/.claude/tts.conf`):
+The scripts live in the plugin cache:
 
 ```bash
-ENGINE=piper
-PIPER_VOICE=en_US-ryan-high   # or en_US-amy-medium, en_US-lessac-medium, ...
+dir=$(ls -d ~/.claude/plugins/cache/iamandroiduser-plugins/tts-companion/*/scripts | tail -1)
+bash "$dir/install.sh" en_US-ryan-high   # add a voice (100+ available)
+bash "$dir/tts-try.sh"                   # speak a sample in every installed voice
 ```
 
-Install more voices (100+ available):
-
-```bash
-bash scripts/install.sh en_GB-jenny_dioco-medium
-```
+Then set `PIPER_VOICE=<name>` in `~/.claude/tts.conf`.
 
 Browse voices: <https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md>
+
+## Troubleshooting
+
+Check which engine runs, the same way the hook runs it:
+
+```bash
+echo '{"hook_event_name":"Stop","last_assistant_message":"It works"}' \
+  | TTS_DEBUG=1 bash "$dir/tts-speak.sh"
+```
+
+`TTS_DEBUG=1` prints each engine it tries and why it skipped it. If Piper is
+missing, check `~/.local/share/piper/install.log`. After a failed download, the
+plugin waits 6 hours before retrying; `bash "$dir/install.sh"` retries now.
 
 ## Optional: best-quality online voices (still free, still no API key)
 
@@ -74,15 +112,20 @@ python3 -m venv ~/.local/share/edge-tts
 |---|---|
 | `.claude-plugin/plugin.json` | Plugin manifest |
 | `.claude-plugin/marketplace.json` | Lets this repo be installed via `plugin marketplace add` |
-| `hooks/hooks.json` | Stop + Notification hook definitions |
+| `hooks/hooks.json` | SessionStart, Stop and Notification hook definitions |
+| `scripts/lib.sh` | Shared config and path resolution |
+| `scripts/bootstrap.sh` | SessionStart: background install of Piper and the voice |
 | `scripts/tts-speak.sh` | The hook handler (engine selection, text cleanup) |
-| `scripts/install.sh` | Downloads Piper binary + a voice |
+| `scripts/install.sh` | Downloads the Piper binary and a voice |
 | `scripts/tts-try.sh` | Audition all installed voices |
 
-## macOS / Windows notes
+## Platform notes
 
-macOS: replace the engine with the built-in `say` command.
-Windows: hooks run via Git Bash; use PowerShell `System.Speech` or `edge-tts`.
+- **Linux:** full support. Piper is installed automatically.
+- **macOS:** works out of the box with the built-in `say` voice. The Piper
+  binaries this installer uses are Linux-only.
+- **Windows:** not supported yet. Hooks run under Git Bash; the `edge` engine
+  may work if `edge-tts` and `ffplay` are on PATH.
 
 ## License
 
