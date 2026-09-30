@@ -10,7 +10,7 @@ source "$HERE/lib.sh" || exit 0
 tts_load_config
 [[ "$TTS_INNER" == 1 ]] && exit 0
 lock="$PIPER_ROOT/.install.lock"
-failed="$PIPER_ROOT/.install-failed"
+failed="$PIPER_ROOT/.install-failed.${PIPER_VOICE//[^A-Za-z0-9_.-]/_}"   # per voice: fixing a bad name retries at once
 
 # Worker: runs detached, holds the lock until the install finishes.
 if [[ "${1:-}" == "--worker" ]]; then

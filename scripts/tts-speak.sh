@@ -165,7 +165,9 @@ speak_edge() {
   [[ -x "$edge" ]] || { debug "edge: edge-tts not installed"; return 1; }
   f="$TMP"
   debug "edge: $EDGE_VOICE"
-  "$edge" --voice "$EDGE_VOICE" --text="$text" --write-media "$f.mp3" 2>/dev/null \
+  # Text via a file, not an argument: an unlimited reply can exceed ARG_MAX.
+  printf '%s' "$text" > "$f.edge.txt" || return 1
+  "$edge" --voice "$EDGE_VOICE" --file "$f.edge.txt" --write-media "$f.mp3" 2>/dev/null \
     && play_file "$f.mp3"
 }
 
