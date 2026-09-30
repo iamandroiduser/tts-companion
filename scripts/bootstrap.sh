@@ -40,6 +40,7 @@ ours() {   # a link this plugin made: into a tts-companion scripts dir, or at a 
   [[ "$target" == */tts-companion/*/scripts/tts-ctl.sh || "$target" == */tts-companion/scripts/tts-ctl.sh ]] \
     || grep -q '^# tts-companion speech control' "$target" 2>/dev/null
 }
+mkdir -p "$HOME/.local/bin" 2>/dev/null
 if [[ -d "$HOME/.local/bin" ]] && { [[ ! -e "$link" && ! -L "$link" ]] || { [[ -L "$link" ]] && ours; }; }; then
   ln -sfn "$HERE/tts-ctl.sh" "$link" 2>/dev/null
 fi

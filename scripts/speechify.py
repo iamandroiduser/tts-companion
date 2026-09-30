@@ -256,16 +256,15 @@ def speak_inline(line, hard=None):
     s = HTML_TAG_RE.sub(" ", s)                                         # <strong>x</strong> -> x
     s = html.unescape(s)                                                # &lt; -> <  (after tags: &lt;div&gt; stays text)
     s = re.sub(r"<https?://[^>]+>", " a link ", s)
-    def display_math(m):
-        body = m.group(1) or m.group(2)
+    def math(body):                    # short: read it; long: a cue (or a smart-speech block)
         if len(body) <= 150:
             return stash(speak_math(body))
         cue_text = "an equation, shown on screen"
         return stash(hard("equation", body, cue_text) if hard else cue_text)
-    s = re.sub(r"\$\$(.+?)\$\$|\\\[(.+?)\\\]", display_math, s)       # display math mid-line
-    s = re.sub(r"\\\((.+?)\\\)", lambda m: stash(speak_math(m.group(1))), s)
+    s = re.sub(r"\$\$(.+?)\$\$|\\\[(.+?)\\\]", lambda m: math(m.group(1) or m.group(2)), s)  # display math mid-line
+    s = re.sub(r"\\\((.+?)\\\)", lambda m: math(m.group(1)), s)
     s = re.sub(r"(?<![\\$\w])\$(?=[^\s$])([^$\n]+?)(?<=[^\s$\\])\$(?![\w$])",
-               lambda m: stash(speak_math(m.group(1))) if not re.fullmatch(r"[\d.,]+", m.group(1)) else m.group(0), s)
+               lambda m: math(m.group(1)) if not re.fullmatch(r"[\d.,]+", m.group(1)) else m.group(0), s)
     s = re.sub(r"https?://\S+|www\.\S+", " a link ", s)
     s = s.translate(SUBSCRIPTS)                                        # H₂O -> H2O
     s = superscripts_to_caret(s)                                       # 10⁴ -> 10^4
@@ -339,28 +338,30 @@ def fence_end(lines, i):
 
 
 def strip_comments(md):
-    """Remove HTML comments (multi-line or unclosed ones too) from prose only: a
-    `<!--` inside fenced or inline code is code, not the start of a comment."""
-    lines, out, prose, i = md.split("\n"), [], [], 0
-
-    def flush():
-        if prose:
-            code = []
-            text = re.sub(r"(`+)(?!`).+?(?<!`)\1(?!`)",
-                          lambda m: code.append(m.group(0)) or f"\x02{len(code) - 1}\x02", "\n".join(prose))
-            text = re.sub(r"<!--.*?(?:-->|$)", "", text, flags=re.S)
-            out.append(re.sub(r"\x02(\d+)\x02", lambda m: code[int(m.group(1))], text))
-            prose.clear()
+    """Remove HTML comments (multi-line or unclosed ones too) from prose. A `<!--`
+    inside fenced or inline code is code, not a comment; inside an open comment,
+    everything up to `-->` is hidden, fences included."""
+    lines, out, i, hidden = md.split("\n"), [], 0, False
     while i < len(lines):
-        if FENCE_RE.match(unquote(lines[i]).strip()):
-            flush()
+        line = lines[i]
+        if hidden:                                        # inside an open comment
+            if "-->" not in line:
+                i += 1
+                continue
+            line, hidden = line.split("-->", 1)[1], False
+        elif FENCE_RE.match(unquote(line).strip()):       # a code block: copy it as is
             _, j = fence_end(lines, i)
             out.extend(lines[i:j])
             i = j
-        else:
-            prose.append(lines[i])
-            i += 1
-    flush()
+            continue
+        code = []
+        line = re.sub(r"(`+)(?!`).+?(?<!`)\1(?!`)",
+                      lambda m: code.append(m.group(0)) or f"\x02{len(code) - 1}\x02", line)
+        line = re.sub(r"<!--.*?-->", "", line)
+        if "<!--" in line:
+            line, hidden = line.split("<!--", 1)[0], True
+        out.append(re.sub(r"\x02(\d+)\x02", lambda m: code[int(m.group(1))], line))
+        i += 1
     return "\n".join(out)
 
 
@@ -398,16 +399,21 @@ def speechify(md, blocks=None):
             out.append(f"\x01{len(blocks) - 1}\x01")
         elif not out or out[-1] != text:
             out.append(text)
-    in_list = False                    # indented lines under a list item continue it
-    indented = re.compile(r"^(?: {4}|\t)")
+    # Indented code needs 4 columns past the enclosing list item's text (0 outside
+    # a list); less indented lines under a list item continue it.
+    list_indent = None
+
+    def width(l):
+        return len(l.expandtabs(4)) - len(l.expandtabs(4).lstrip())
     while i < len(lines):
         line = lines[i]
         t = line.strip()
-        if t and not indented.match(line) and not re.match(r"^([-*+]|\d+[.)])\s", t):
-            in_list = False
-        if t and indented.match(line) and not para and not in_list:   # indented code block
+        if t and width(line) == 0 and not re.match(r"^([-*+]|\d+[.)])\s", t):
+            list_indent = None
+        code_col = (list_indent or 0) + 4
+        if t and width(line) >= code_col and not para:   # indented code block
             start, end = i, i
-            while end < len(lines) and (indented.match(lines[end]) or not lines[end].strip()):
+            while end < len(lines) and (width(lines[end]) >= code_col or not lines[end].strip()):
                 end += 1
             while end > start and not lines[end - 1].strip():             # trailing blank lines
                 end -= 1
@@ -479,7 +485,8 @@ def speechify(md, blocks=None):
         heading = re.match(r"^#{1,6}\s", t)
         if heading or re.match(r"^([-*+]|\d+[.)])\s", t):  # a heading or list item starts anew
             flush()
-            in_list = not heading
+            item = re.match(r"^(\s*)([-*+]|\d+[.)])(\s+)", line.expandtabs(4))
+            list_indent = None if heading else len(item.group(0)) if item else list_indent
         t = re.sub(r"^(#{1,6}|>+)\s*", "", t)             # heading / quote
         t = re.sub(r"^([-*+]|\d+[.)])\s+(\[[ xX]\]\s*)?", "", t)  # list item / checkbox
         para.append(t)                                     # soft-wrapped lines join

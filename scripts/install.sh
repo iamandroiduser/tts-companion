@@ -41,9 +41,17 @@ if [[ "${TTS_INSTALL_LOCKED:-0}" != 1 ]]; then
   tts_lock "$lock" 12000 5 || die "another install is still running (see $ROOT/install.log)"
 fi
 tmp=$(mktemp -d "$ROOT/.install.XXXXXX")
+restore_voice() {   # a replaced voice pair that didn't land completely: put the old one back
+  [[ -d "$tmp/voice.old" && -n "$(ls -A "$tmp/voice.old")" ]] || return 0
+  [[ -f "$ROOT/$VOICE.onnx" && -f "$ROOT/$VOICE.onnx.json" ]] && return 0
+  rm -f "$ROOT/$VOICE.onnx" "$ROOT/$VOICE.onnx.json"
+  mv "$tmp/voice.old/"* "$ROOT/"
+}
 # On any exit, an old bin/ still parked in $tmp means the new one never landed: put it back.
 trap '[[ -d "$tmp/bin.old" && ! -e "$ROOT/bin" ]] && mv "$tmp/bin.old" "$ROOT/bin"
+      restore_voice
       rm -rf "$tmp"; [[ "${TTS_INSTALL_LOCKED:-0}" == 1 ]] || tts_unlock "$lock"' EXIT
+trap 'exit 1' TERM INT HUP    # so the EXIT trap (rollback, cleanup) also runs when killed
 
 # Download to a temp dir first, then move into place, so an interrupted
 # download never leaves a half-installed binary or voice behind.
@@ -52,11 +60,12 @@ trap '[[ -d "$tmp/bin.old" && ! -e "$ROOT/bin" ]] && mv "$tmp/bin.old" "$ROOT/bi
 # holds nothing but the files a Piper release ships.
 piper_release_bin() {
   local b="$1" e
-  [[ -x "$b/piper" && -d "$b/espeak-ng-data" ]] || return 1
+  # Our own install (marker) may be half-removed; an unmarked one must look complete.
+  [[ -f "$b/.tts-companion" ]] || [[ -x "$b/piper" && -d "$b/espeak-ng-data" ]] || return 1
   for e in "$b"/* "$b"/.[!.]* "$b"/..?*; do      # every entry, dotfiles included
     [[ -e "$e" || -L "$e" ]] || continue
     case "${e##*/}" in
-      piper|piper_phonemize|espeak-ng|espeak-ng-data|pkgconfig|libtashkeel_model.ort) ;;
+      piper|piper_phonemize|espeak-ng|espeak-ng-data|pkgconfig|libtashkeel_model.ort|.tts-companion) ;;
       libespeak-ng.so*|libonnxruntime.so*|libpiper_phonemize.so*) ;;
       *) return 1 ;;
     esac
@@ -64,7 +73,7 @@ piper_release_bin() {
 }
 piper_owned_bin() {
   local b="$ROOT/bin"
-  [[ ! -e "$b" ]] || [[ -z "$(ls -A "$b")" ]] || [[ -f "$b/.tts-companion" ]] || piper_release_bin "$b"
+  [[ ! -e "$b" ]] || [[ -z "$(ls -A "$b")" ]] || piper_release_bin "$b"
 }
 if [[ "$FORCE" == 1 || ! -x "$ROOT/bin/piper" ]]; then
   piper_owned_bin || die "$ROOT/bin is not a Piper install made by this plugin; set PIPER_ROOT to a dedicated directory"
@@ -95,11 +104,16 @@ if [[ "$FORCE" == 1 || ! -f "$ROOT/$VOICE.onnx" || ! -f "$ROOT/$VOICE.onnx.json"
   echo ">> Downloading voice $VOICE"
   curl -fsSLo "$tmp/$VOICE.onnx.json" "$base/$VOICE.onnx.json"
   curl -fsSLo "$tmp/$VOICE.onnx"      "$base/$VOICE.onnx"
-  # The .json goes in last: a voice counts as installed only when both files
-  # exist, so an interrupted replace can never leave a mismatched pair behind.
-  rm -f "$ROOT/$VOICE.onnx.json" "$ROOT/$VOICE.onnx"
-  mv "$tmp/$VOICE.onnx"      "$ROOT/$VOICE.onnx"
-  mv "$tmp/$VOICE.onnx.json" "$ROOT/$VOICE.onnx.json"
+  # Park the installed pair (if any) as a rollback, then move the new pair in,
+  # .json last: a voice counts as installed only when both files exist. If a
+  # move fails or we are interrupted, the EXIT trap puts the old pair back.
+  mkdir -p "$tmp/voice.old"
+  for f in "$VOICE.onnx.json" "$VOICE.onnx"; do
+    [[ -e "$ROOT/$f" ]] && mv "$ROOT/$f" "$tmp/voice.old/"
+  done
+  mv "$tmp/$VOICE.onnx" "$ROOT/$VOICE.onnx" && mv "$tmp/$VOICE.onnx.json" "$ROOT/$VOICE.onnx.json" \
+    || die "could not install voice $VOICE into $ROOT (previous files restored)"
+  rm -rf "$tmp/voice.old"
 else
   echo ">> Voice $VOICE already installed"
 fi

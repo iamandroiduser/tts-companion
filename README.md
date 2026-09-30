@@ -123,7 +123,8 @@ SMART_SPEECH_TIMEOUT=25
   ```
 
   The plugin keeps `~/.local/bin/tts-companion` pointing at its current version
-  (only when `~/.local/bin` exists and that name isn't taken by another file).
+  (creating `~/.local/bin` if needed; it never replaces another file of that name).
+  If `~/.local/bin` isn't on your PATH, run it as `~/.local/bin/tts-companion stop`.
 - **A real button:** bind `~/.local/bin/tts-companion toggle` (and `stop`) to a
   keyboard shortcut in your desktop's settings, e.g. GNOME: Settings → Keyboard →
   Custom Shortcuts.
