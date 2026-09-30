@@ -151,7 +151,7 @@ def speak_math(s):
         return f" {word} from {low}{f' to {high}' if high else ''} of "
     s = re.sub(r"\\(int|sum|prod|lim)_(?:\{([^{}]*)\}|([^{}\s^]+))(?:\^(?:\{([^{}]*)\}|([^{}\s]+)))?",
                _limits, s)                                # \int_0^T, \sum_{i=1}^{n}, \lim_{x \to 0}
-    s = re.sub(r"\\(left|right|big|Big|bigg|Bigg|displaystyle|,|;|!|quad|qquad)", " ", s)
+    s = re.sub(r"\\(?:(?:left|right|bigg|Bigg|big|Big|displaystyle|qquad|quad)(?![A-Za-z])|[,;!])", " ", s)
     greek_names = {v.lower() for v in GREEK.values()} | {v for v in GREEK.values()}
     s = re.sub(r"\\([A-Za-z]+)",
                lambda m: LATEX.get(m.group(1), f" {m.group(1)} " if m.group(1) in greek_names else f" {m.group(1)} "), s)
@@ -496,8 +496,12 @@ def speechify(md, blocks=None):
             continue
         if is_diagram_line(t):                             # ASCII / box diagram
             start, end = i, i
+            # a short label line between two drawing lines belongs to the drawing;
+            # a sentence (long, or ending like one) is prose and ends it
             while end < len(lines) and (is_diagram_line(lines[end]) or (
-                    lines[end].strip() and end + 1 < len(lines) and is_diagram_line(lines[end + 1]))):
+                    lines[end].strip() and len(lines[end].strip()) <= 30
+                    and not re.search(r"[.!?:]$", lines[end].strip())
+                    and end + 1 < len(lines) and is_diagram_line(lines[end + 1]))):
                 end += 1
             if end - start >= 2 or any(ch in BOX_CHARS for ch in t):
                 cue("Diagram on screen.", "diagram (text art)", lines[start:end])

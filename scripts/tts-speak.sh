@@ -74,6 +74,11 @@ if tts_cancelled "$CANCEL_TOKEN" "$MY_START" "$MY_EPOCH"; then   # stopped while
   tts_unlock "$HANDOFF"; debug "stopped before speaking"; exit 0
 fi
 if old=$(tts_current_pid) && [[ "$old" != "$$" ]]; then
+  # Hooks run asynchronously: if the one speaking was started after us, we are
+  # the stale one (e.g. an older hook slow to read its input). Leave it be.
+  if tts_started_after "$old" "$MY_START" "$MY_EPOCH"; then
+    tts_unlock "$HANDOFF"; debug "a newer reply is already speaking"; exit 0
+  fi
   tts_signal TERM "$old"
 fi
 echo "$TTS_SELF" > "$PIDFILE" 2>/dev/null   # pid + start time: see tts_ident
@@ -93,7 +98,7 @@ if command -v python3 >/dev/null 2>&1; then
   text=$(cat "$TMP.txt")
 else
   prep_fallback() {
-    awk '{ t=$0; sub(/^[[:space:]]+/, "", t) }
+    awk '{ t=$0; sub(/^([[:space:]]*>)*[[:space:]]*/, "", t) }   # t: the line without indent or > quote marks
              !f && match(t, /^(```+|~~~+)/) { f=substr(t,1,RLENGTH); print "Code block on screen."; next }
              f { c=t; sub(/[[:space:]]+$/, "", c)
                  if (substr(c,1,1) == substr(f,1,1) && c ~ /^(`+|~+)$/ && length(c) >= length(f)) f=""

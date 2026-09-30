@@ -43,6 +43,11 @@ if [[ "$cmd" == "stop" ]]; then
   if stop_all; then echo "Stopped."; else echo "Nothing is being spoken."; fi
   exit 0
 fi
+# Look up the speaker and act on it under the hand-off lock, so a new reply
+# can't replace it in between (we'd pause the old one and say "Paused").
+locked=0
+tts_lock "$TTS_PIDFILE.lock" 40 && locked=1
+trap '(( locked )) && tts_unlock "$TTS_PIDFILE.lock"' EXIT
 pid=$(tts_current_pid) || { echo "Nothing is being spoken."; exit 0; }
 paused() { [[ "$(ps -o stat= -p "$pid" 2>/dev/null)" == T* ]]; }
 

@@ -155,6 +155,19 @@ tts_cancelled() {
   fi
 }
 
+# tts_started_after PID MY_START_TICKS MY_START_EPOCH — did PID start after us?
+# Clock ticks on Linux; elsewhere whole seconds, where only a clear gap counts.
+tts_started_after() {
+  local t e
+  if [[ "$2" =~ ^[0-9]+$ ]] && t=$(tts_proc_start "$1"); then
+    (( t > $2 ))
+  elif [[ "$3" =~ ^[0-9]+$ ]] && e=$(tts_start_epoch "$1"); then
+    (( e > $3 + 1 ))
+  else
+    return 1
+  fi
+}
+
 # A process's identity: its pid plus its start time (ps lstart, Linux and macOS),
 # so a pid that has been reused by another process doesn't count as the same one.
 tts_ident() {
