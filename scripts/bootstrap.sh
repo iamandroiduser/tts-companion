@@ -18,10 +18,10 @@ failed="$PIPER_ROOT/.install-failed.${PIPER_VOICE//[^A-Za-z0-9_.-]/_}"   # per v
 # comes (the parent died first), the lock was never ours: leave it and stop.
 if [[ "${1:-}" == "--worker" ]]; then
   for _ in {1..400}; do
-    [[ "$(cat "$lock/pid" 2>/dev/null)" == "$$" ]] && break
+    [[ "$(cat "$lock/pid" 2>/dev/null)" == "$TTS_SELF" ]] && break
     sleep 0.05
   done
-  [[ "$(cat "$lock/pid" 2>/dev/null)" == "$$" ]] || exit 0
+  [[ "$(cat "$lock/pid" 2>/dev/null)" == "$TTS_SELF" ]] || exit 0
   trap 'tts_unlock "$lock"' EXIT
   echo "=== $(date) installing $PIPER_VOICE into $PIPER_ROOT"
   if TTS_INSTALL_LOCKED=1 bash "$HERE/install.sh" "$PIPER_VOICE"; then rm -f "$failed"; else touch "$failed"; fi
@@ -71,5 +71,5 @@ fi
 # Hand the lock to the worker by recording its pid. The worker does nothing
 # until it sees its own pid there, so the lock names a live process throughout
 # and can't be released or reclaimed between the two of us.
-echo "$!" > "$lock/pid"
+tts_ident $! > "$lock/pid" || echo $! > "$lock/pid"
 exit 0

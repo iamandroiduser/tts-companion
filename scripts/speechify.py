@@ -435,10 +435,15 @@ def speechify(md, blocks=None):
                           or not re.search(r"</code\s*>", t, re.I)):
             close = re.compile(rf"</{html_code.group(1)}\s*>", re.I)
             end = i
-            while end < len(lines) and not close.search(lines[end]):
+            while end < len(lines) and not (m := close.search(lines[end])):
                 end += 1
-            raw = "\n".join(lines[i:end + 1])
-            i = end + 1
+            if end < len(lines):               # text after the closing tag is reply prose
+                raw = "\n".join(lines[i:end] + [lines[end][:m.end()]])
+                rest = lines[end][m.end():]
+                lines[end] = rest
+                i = end if rest.strip() else end + 1
+            else:
+                raw, i = "\n".join(lines[i:]), len(lines)
             lang = re.search(r"\bclass=[\"']?(?:language|lang)-([\w+#.-]+)", raw, re.I)
             lang = lang.group(1).lower() if lang else ""
             body = html.unescape(re.sub(r"</?(?:pre|code)\b[^>]*>", "", raw, flags=re.I)).strip("\n").split("\n")

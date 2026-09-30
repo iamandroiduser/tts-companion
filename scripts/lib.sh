@@ -109,38 +109,76 @@ tts_proc_start() {
   set -- $s
   [[ "${20:-}" =~ ^[0-9]+$ ]] && echo "${20}"
 }
+# tts_start_epoch PID — when the process started, in whole seconds since the
+# epoch (portable: from ps's elapsed time, [[dd-]hh:]mm:ss; may be 1 s off).
+tts_start_epoch() {
+  local e d=0 h=0 m=0 s
+  e=$(ps -o etime= -p "$1" 2>/dev/null | tr -d ' ') && [[ -n "$e" ]] || return 1
+  [[ "$e" == *-* ]] && { d=${e%%-*}; e=${e#*-}; }
+  IFS=: read -r -a p <<<"$e"
+  case ${#p[@]} in
+    3) h=${p[0]} m=${p[1]} s=${p[2]} ;;
+    2) m=${p[0]} s=${p[1]} ;;
+    *) return 1 ;;
+  esac
+  echo $(( $(date +%s) - ((10#$d * 24 + 10#$h) * 60 + 10#$m) * 60 - 10#$s ))
+}
 # Every stop (tts-companion stop, your next prompt) rewrites the cancel file with
-# its own start time. A speak run gives up if a stop came after it was started:
-# on Linux by comparing process start times, which also covers a hook that
-# Claude Code had already launched but that hadn't run yet; elsewhere by noticing
-# that the file changed after the run first read it.
+# the time it happened. A speak run gives up if a stop came at or after the time
+# the run was started, which also covers a hook that Claude Code had already
+# launched but that hadn't got going yet. On Linux this compares process start
+# times in clock ticks; elsewhere in seconds, counting a stop up to 1 s before
+# the run's start as later (ps's rounding). Any change to the file after the run
+# first read it also counts.
 tts_cancel_token() { [[ -n "$TTS_CANCELFILE" ]] && cat "$TTS_CANCELFILE" 2>/dev/null; }
 tts_cancel_all() {
   [[ -n "$TTS_CANCELFILE" ]] || return 0
-  echo "$(tts_proc_start $$) $(date +%s%N 2>/dev/null).$$.$RANDOM" > "$TTS_CANCELFILE" 2>/dev/null
+  echo "$(tts_proc_start $$ || echo -) $(date +%s) $$.$RANDOM" > "$TTS_CANCELFILE" 2>/dev/null
 }
-# tts_cancelled TOKEN_AT_START MY_START_TICKS
+# tts_cancelled TOKEN_AT_START MY_START_TICKS MY_START_EPOCH
 tts_cancelled() {
-  local now stop_start
+  local now ticks epoch _
   now=$(tts_cancel_token)
   [[ "$now" != "$1" ]] && return 0                  # a stop since we first looked
-  stop_start=${now%% *}
-  [[ -n "$2" && "$stop_start" =~ ^[0-9]+$ ]] && (( stop_start >= $2 ))   # one since we were started
+  read -r ticks epoch _ <<<"$now"
+  if [[ "$ticks" =~ ^[0-9]+$ && "$2" =~ ^[0-9]+$ ]]; then
+    (( ticks >= $2 ))
+  elif [[ "$epoch" =~ ^[0-9]+$ && "$3" =~ ^[0-9]+$ ]]; then
+    (( epoch + 1 >= $3 ))
+  else
+    return 1
+  fi
 }
 
-# tts_lock DIR [TRIES] [STALE_MIN] — take a mkdir lock recording our pid, retrying
-# every 50 ms. A lock is taken over only when its recorded owner is dead (or it has
+# A process's identity: its pid plus its start time (ps lstart, Linux and macOS),
+# so a pid that has been reused by another process doesn't count as the same one.
+tts_ident() {
+  local t
+  t=$(ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' '_') || return 1
+  t=${t#_}; t=${t%_}
+  [[ -n "$t" ]] && echo "$1 $t"
+}
+TTS_SELF=$(tts_ident $$ || echo $$)
+# Is the process recorded as "PID START" (or a bare PID from an older version) still that process?
+tts_ident_alive() {
+  local pid=${1%% *}
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  if [[ "$1" == *" "* ]]; then [[ "$(tts_ident "$pid")" == "$1" ]]; else kill -0 "$pid" 2>/dev/null; fi
+}
+
+# tts_lock DIR [TRIES] [STALE_MIN] — take a mkdir lock recording our identity, retrying
+# every 50 ms. A lock is taken over only when its recorded owner is gone (or it has
 # no owner after STALE_MIN minutes), re-checked under DIR.reclaim so two waiters
 # can't both reclaim it and delete a lock someone else has just taken.
 tts_lock() {
   local dir="$1" tries="${2:-100}" stale="${3:-1}" n owner
   for ((n = 0; n < tries; n++)); do
-    if mkdir "$dir" 2>/dev/null; then echo "$$" > "$dir/pid"; return 0; fi
+    if mkdir "$dir" 2>/dev/null; then echo "$TTS_SELF" > "$dir/pid"; return 0; fi
     if tts_lock_is_stale "$dir" "$stale"; then
       if mkdir "$dir.reclaim" 2>/dev/null; then
         tts_lock_is_stale "$dir" "$stale" && rm -rf "$dir"
         if mkdir "$dir" 2>/dev/null; then                 # take it while still holding .reclaim
-          echo "$$" > "$dir/pid"; rmdir "$dir.reclaim" 2>/dev/null; return 0
+          echo "$TTS_SELF" > "$dir/pid"; rmdir "$dir.reclaim" 2>/dev/null; return 0
         fi
         rmdir "$dir.reclaim" 2>/dev/null
       fi
@@ -154,15 +192,15 @@ tts_lock() {
 tts_lock_is_stale() {
   local owner
   owner=$(cat "$1/pid" 2>/dev/null)
-  if [[ "$owner" =~ ^[0-9]+$ ]]; then
-    ! kill -0 "$owner" 2>/dev/null
+  if [[ "${owner%% *}" =~ ^[0-9]+$ ]]; then
+    ! tts_ident_alive "$owner"                       # gone, or its pid now belongs to another process
   else
     [[ -d "$1" && -n "$(find "$1" -prune -mmin "+$2" 2>/dev/null)" ]]
   fi
 }
 # Release a lock only if we still own it.
 tts_unlock() {
-  [[ "$(cat "$1/pid" 2>/dev/null)" == "${2:-$$}" ]] && rm -rf "$1"
+  [[ "$(cat "$1/pid" 2>/dev/null)" == "$TTS_SELF" ]] && rm -rf "$1"
   return 0
 }
 
@@ -173,9 +211,10 @@ tts_descendants() {
 
 # Print the pid of the tts-speak.sh run that is speaking now, if any.
 tts_current_pid() {
-  local pid
-  pid=$(cat "$TTS_PIDFILE" 2>/dev/null) || return 1
-  [[ "$pid" =~ ^[0-9]+$ ]] && ps -p "$pid" -o args= 2>/dev/null | grep -q 'tts-speak' || return 1
+  local rec pid
+  rec=$(cat "$TTS_PIDFILE" 2>/dev/null) || return 1
+  pid=${rec%% *}
+  tts_ident_alive "$rec" && ps -p "$pid" -o args= 2>/dev/null | grep -q 'tts-speak' || return 1
   echo "$pid"
 }
 

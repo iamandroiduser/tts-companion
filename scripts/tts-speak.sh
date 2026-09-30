@@ -15,6 +15,7 @@ debug() { [[ "${TTS_DEBUG:-0}" == "1" ]] && echo "tts-companion: $*" >&2; return
 
 [[ -n "$TTS_STATE_DIR" ]] || exit 0   # no safe private state dir (see lib.sh)
 MY_START=$(tts_proc_start $$)        # before reading the input: see tts_cancel_all
+MY_EPOCH=$(tts_start_epoch $$)
 CANCEL_TOKEN=$(tts_cancel_token)
 input=$(cat)
 event=$(tts_json hook_event_name <<<"$input")
@@ -41,7 +42,7 @@ cleanup() {
   # Under the hand-off lock, so a newer run can't write its pid between our
   # check and our delete (which would leave its speech untracked).
   if tts_lock "$HANDOFF" 40; then
-    [[ "$(cat "$PIDFILE" 2>/dev/null)" == "$$" ]] && rm -f "$PIDFILE"
+    [[ "$(cat "$PIDFILE" 2>/dev/null)" == "$TTS_SELF" ]] && rm -f "$PIDFILE"
     tts_unlock "$HANDOFF"
   fi
 }
@@ -69,13 +70,13 @@ wait_job() { while :; do wait "$JOB"; kill -0 "$JOB" 2>/dev/null || break; sleep
 # a short lock (not held while speaking) so two hooks firing at once can't both
 # miss each other.
 tts_lock "$HANDOFF" 100 || { debug "hand-off lock busy; not speaking"; exit 0; }
-if tts_cancelled "$CANCEL_TOKEN" "$MY_START"; then   # stopped while we were starting
+if tts_cancelled "$CANCEL_TOKEN" "$MY_START" "$MY_EPOCH"; then   # stopped while we were starting
   tts_unlock "$HANDOFF"; debug "stopped before speaking"; exit 0
 fi
 if old=$(tts_current_pid) && [[ "$old" != "$$" ]]; then
   tts_signal TERM "$old"
 fi
-echo "$$" > "$PIDFILE" 2>/dev/null
+echo "$TTS_SELF" > "$PIDFILE" 2>/dev/null   # pid + start time: see tts_ident
 tts_unlock "$HANDOFF"
 
 # Make the reply speakable (scripts/speechify.py): code blocks, tables and
@@ -191,7 +192,7 @@ speak_espeak() {
 }
 
 # A newer reply may have taken over, or speech was stopped, while the text was prepared.
-[[ "$(cat "$PIDFILE" 2>/dev/null)" == "$$" ]] && ! tts_cancelled "$CANCEL_TOKEN" "$MY_START" || exit 0
+[[ "$(cat "$PIDFILE" 2>/dev/null)" == "$TTS_SELF" ]] && ! tts_cancelled "$CANCEL_TOKEN" "$MY_START" "$MY_EPOCH" || exit 0
 
 speak() {
   case "$ENGINE" in
