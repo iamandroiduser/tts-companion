@@ -39,6 +39,10 @@ trap 'rm -rf "$tmp"' EXIT
 # Download to a temp dir first, then move into place, so an interrupted
 # download never leaves a half-installed binary or voice behind.
 if [[ "$FORCE" == 1 || ! -x "$ROOT/bin/piper" ]]; then
+  # $ROOT/bin is replaced wholesale, so refuse unless it is empty or already Piper's.
+  if [[ -d "$ROOT/bin" && ! -x "$ROOT/bin/piper" && -n "$(ls -A "$ROOT/bin")" ]]; then
+    die "$ROOT/bin exists and is not a Piper install; set PIPER_ROOT to a dedicated directory"
+  fi
   echo ">> Installing Piper ($asset) into $ROOT/bin"
   mkdir -p "$tmp/bin"
   curl -fsSL "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/$asset" \

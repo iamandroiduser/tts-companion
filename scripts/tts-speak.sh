@@ -37,6 +37,10 @@ fi
 # pid file) and its players. Never pattern-match other users' processes.
 PIDFILE="${TMPDIR:-/tmp}/tts-companion-$(id -u).pid"
 descendants() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do echo "$c"; descendants "$c"; done; }
+# Serialize the hand-off (not the speech) so two hooks firing at once can't both
+# miss each other; a lock left by a crashed run is taken over after ~1s.
+HANDOFF="$PIDFILE.lock"
+for _ in {1..20}; do mkdir "$HANDOFF" 2>/dev/null && break; sleep 0.05; done
 if old=$(cat "$PIDFILE" 2>/dev/null) && [[ "$old" =~ ^[0-9]+$ && "$old" != "$$" ]] \
    && ps -p "$old" -o args= 2>/dev/null | grep -q 'tts-speak'; then
   kids=$(descendants "$old")
@@ -45,6 +49,7 @@ if old=$(cat "$PIDFILE" 2>/dev/null) && [[ "$old" =~ ^[0-9]+$ && "$old" != "$$" 
   [[ -n "$kids" ]] && kill $kids 2>/dev/null
 fi
 echo "$$" > "$PIDFILE" 2>/dev/null
+rmdir "$HANDOFF" 2>/dev/null
 
 TMPFILES=()
 cleanup() {

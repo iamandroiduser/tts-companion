@@ -13,7 +13,8 @@ failed="$PIPER_ROOT/.install-failed"
 
 # Worker: runs detached, holds the lock until the install finishes.
 if [[ "${1:-}" == "--worker" ]]; then
-  trap 'rm -rf "$lock"' EXIT
+  echo "$$" > "$lock/pid"
+  trap '[[ "$(cat "$lock/pid" 2>/dev/null)" == "$$" ]] && rm -rf "$lock"' EXIT
   echo "=== $(date) installing $PIPER_VOICE into $PIPER_ROOT"
   if bash "$HERE/install.sh" "$PIPER_VOICE"; then rm -f "$failed"; else touch "$failed"; fi
   exit 0
@@ -24,7 +25,8 @@ tts_write_conf_template 2>/dev/null
 [[ "$ENABLED" == "1" && "$AUTO_INSTALL" == "1" ]] || exit 0
 [[ "$ENGINE" == "piper" || "$ENGINE" == "edge" ]] || exit 0
 [[ "$(uname -s)" == "Linux" ]] || exit 0
-[[ -x "$PIPER_ROOT/bin/piper" && -f "$PIPER_ROOT/$PIPER_VOICE.onnx" ]] && exit 0
+[[ -x "$PIPER_ROOT/bin/piper" && -f "$PIPER_ROOT/$PIPER_VOICE.onnx" \
+   && -f "$PIPER_ROOT/$PIPER_VOICE.onnx.json" ]] && exit 0
 command -v curl >/dev/null && command -v tar >/dev/null || exit 0
 
 mkdir -p "$PIPER_ROOT" 2>/dev/null || exit 0
@@ -32,8 +34,16 @@ log="$PIPER_ROOT/install.log"
 
 # After a failure, wait 6 hours before retrying (offline, proxy, bad voice name…).
 [[ -n "$(find "$failed" -mmin -360 2>/dev/null)" ]] && exit 0
-# Another session is installing; a lock older than 30 minutes is stale.
-[[ -n "$(find "$lock" -maxdepth 0 -mmin +30 2>/dev/null)" ]] && rm -rf "$lock"
+# Another session may be installing. Reclaim the lock only if its worker is gone
+# (or never recorded a pid within 5 minutes), never just because it is slow.
+if [[ -d "$lock" ]]; then
+  owner=$(cat "$lock/pid" 2>/dev/null)
+  if [[ "$owner" =~ ^[0-9]+$ ]]; then
+    kill -0 "$owner" 2>/dev/null || rm -rf "$lock"
+  elif [[ -n "$(find "$lock" -maxdepth 0 -mmin +5 2>/dev/null)" ]]; then
+    rm -rf "$lock"
+  fi
+fi
 mkdir "$lock" 2>/dev/null || exit 0
 
 # Detach fully: no stdin/stdout ties to Claude Code, and its own session so it
