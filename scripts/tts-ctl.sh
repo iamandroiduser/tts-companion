@@ -18,12 +18,18 @@ tts_load_config
 
 # Stop what is playing and cancel replies still being prepared. Done under the
 # speak hand-off lock, so a run can't register itself between the two steps.
+# Returns 0 if something was stopped, 1 if nothing was playing, 2 if the lock
+# stayed busy: replies still being prepared are cancelled even then, but the
+# speaker is only looked up and signalled while we hold the lock.
 stop_all() {
-  local locked=0 pid
-  tts_lock "$TTS_PIDFILE.lock" 40 && locked=1
+  local pid
+  if ! tts_lock "$TTS_PIDFILE.lock" 40; then
+    tts_cancel_all
+    return 2
+  fi
   tts_cancel_all
   pid=$(tts_current_pid) && tts_signal TERM "$pid"
-  (( locked )) && tts_unlock "$TTS_PIDFILE.lock"
+  tts_unlock "$TTS_PIDFILE.lock"
   [[ -n "$pid" ]]
 }
 
@@ -40,14 +46,21 @@ if [[ -z "$TTS_STATE_DIR" ]]; then
   exit 1
 fi
 if [[ "$cmd" == "stop" ]]; then
-  if stop_all; then echo "Stopped."; else echo "Nothing is being spoken."; fi
+  stop_all
+  case $? in
+    0) echo "Stopped." ;;
+    1) echo "Nothing is being spoken." ;;
+    *) echo "tts-companion: busy (a reply is just starting); run stop again." >&2; exit 1 ;;
+  esac
   exit 0
 fi
 # Look up the speaker and act on it under the hand-off lock, so a new reply
 # can't replace it in between (we'd pause the old one and say "Paused").
-locked=0
-tts_lock "$TTS_PIDFILE.lock" 40 && locked=1
-trap '(( locked )) && tts_unlock "$TTS_PIDFILE.lock"' EXIT
+if ! tts_lock "$TTS_PIDFILE.lock" 40; then
+  echo "tts-companion: busy (a reply is just starting); try again." >&2
+  exit 1
+fi
+trap 'tts_unlock "$TTS_PIDFILE.lock"' EXIT
 pid=$(tts_current_pid) || { echo "Nothing is being spoken."; exit 0; }
 paused() { [[ "$(ps -o stat= -p "$pid" 2>/dev/null)" == T* ]]; }
 
