@@ -48,11 +48,23 @@ trap '[[ -d "$tmp/bin.old" && ! -e "$ROOT/bin" ]] && mv "$tmp/bin.old" "$ROOT/bi
 # Download to a temp dir first, then move into place, so an interrupted
 # download never leaves a half-installed binary or voice behind.
 # $ROOT/bin is replaced as a whole, so only ever touch one that is ours: empty,
-# marked by this installer, or an unmodified Piper release (older installs).
+# marked by this installer, or an unmodified Piper release (older installs) that
+# holds nothing but the files a Piper release ships.
+piper_release_bin() {
+  local b="$1" e
+  [[ -x "$b/piper" && -d "$b/espeak-ng-data" ]] || return 1
+  for e in "$b"/* "$b"/.[!.]*; do
+    [[ -e "$e" || -L "$e" ]] || continue
+    case "${e##*/}" in
+      piper|piper_phonemize|espeak-ng|espeak-ng-data|pkgconfig|libtashkeel_model.ort) ;;
+      libespeak-ng.so*|libonnxruntime.so*|libpiper_phonemize.so*) ;;
+      *) return 1 ;;
+    esac
+  done
+}
 piper_owned_bin() {
   local b="$ROOT/bin"
-  [[ ! -e "$b" ]] || [[ -z "$(ls -A "$b")" ]] || [[ -f "$b/.tts-companion" ]] \
-    || [[ -x "$b/piper" && -d "$b/espeak-ng-data" && -n "$(ls "$b"/libpiper_phonemize* 2>/dev/null)" ]]
+  [[ ! -e "$b" ]] || [[ -z "$(ls -A "$b")" ]] || [[ -f "$b/.tts-companion" ]] || piper_release_bin "$b"
 }
 if [[ "$FORCE" == 1 || ! -x "$ROOT/bin/piper" ]]; then
   piper_owned_bin || die "$ROOT/bin is not a Piper install made by this plugin; set PIPER_ROOT to a dedicated directory"

@@ -12,9 +12,16 @@ tts_load_config
 lock="$PIPER_ROOT/.install.lock"
 failed="$PIPER_ROOT/.install-failed.${PIPER_VOICE//[^A-Za-z0-9_.-]/_}"   # per voice: fixing a bad name retries at once
 
-# Worker: runs detached, holds the lock until the install finishes.
+# Worker: runs detached, holds the lock until the install finishes. The parent
+# hands the lock over by writing our pid into it; until then the lock still names
+# the (live) parent, so no other session can take it. If the hand-over never
+# comes (the parent died first), the lock was never ours: leave it and stop.
 if [[ "${1:-}" == "--worker" ]]; then
-  echo "$$" > "$lock/pid"
+  for _ in {1..400}; do
+    [[ "$(cat "$lock/pid" 2>/dev/null)" == "$$" ]] && break
+    sleep 0.05
+  done
+  [[ "$(cat "$lock/pid" 2>/dev/null)" == "$$" ]] || exit 0
   trap 'tts_unlock "$lock"' EXIT
   echo "=== $(date) installing $PIPER_VOICE into $PIPER_ROOT"
   if TTS_INSTALL_LOCKED=1 bash "$HERE/install.sh" "$PIPER_VOICE"; then rm -f "$failed"; else touch "$failed"; fi
@@ -60,14 +67,8 @@ if command -v setsid >/dev/null; then
 else
   nohup bash "$HERE/bootstrap.sh" --worker </dev/null >>"$log" 2>&1 &
 fi
-# Hand the lock to the worker: it writes its own pid first thing. Stay alive (so
-# the lock never looks abandoned) until it has done so, or has already finished
-# and released it; never write to the lock ourselves after that point.
-worker=$!
-for _ in {1..100}; do
-  owner=$(cat "$lock/pid" 2>/dev/null) || break          # released already
-  [[ "$owner" == "$worker" ]] && break
-  kill -0 "$worker" 2>/dev/null || break
-  sleep 0.02
-done
+# Hand the lock to the worker by recording its pid. The worker does nothing
+# until it sees its own pid there, so the lock names a live process throughout
+# and can't be released or reclaimed between the two of us.
+echo "$!" > "$lock/pid"
 exit 0

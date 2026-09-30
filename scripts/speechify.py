@@ -348,9 +348,27 @@ def speechify(md, blocks=None):
             out.append(f"\x01{len(blocks) - 1}\x01")
         elif not out or out[-1] != text:
             out.append(text)
+    in_list = False                    # indented lines under a list item continue it
+    indented = re.compile(r"^(?: {4}|\t)")
     while i < len(lines):
         line = lines[i]
         t = line.strip()
+        if t and not indented.match(line) and not re.match(r"^([-*+]|\d+[.)])\s", t):
+            in_list = False
+        if t and indented.match(line) and not para and not in_list:   # indented code block
+            start, end = i, i
+            while end < len(lines) and (indented.match(lines[end]) or not lines[end].strip()):
+                end += 1
+            while end > start and not lines[end - 1].strip():             # trailing blank lines
+                end -= 1
+            body = lines[start:end]
+            i = end
+            code = [b for b in body if b.strip()]
+            if sum(map(is_diagram_line, code)) >= len(code) / 2:
+                cue("Diagram on screen.", "diagram (text art)", body)
+            else:
+                cue("Code block on screen.", "code (unknown language)", body)
+            continue
         fence = re.match(r"^(```+|~~~+)\s*([\w+#.-]*)", t)
         if fence:                                         # fenced block
             mark, lang = fence.group(1), fence.group(2).lower()
@@ -415,6 +433,7 @@ def speechify(md, blocks=None):
         heading = re.match(r"^#{1,6}\s", t)
         if heading or re.match(r"^([-*+]|\d+[.)])\s", t):  # a heading or list item starts anew
             flush()
+            in_list = not heading
         t = re.sub(r"^(#{1,6}|>+)\s*", "", t)             # heading / quote
         t = re.sub(r"^([-*+]|\d+[.)])\s+(\[[ xX]\]\s*)?", "", t)  # list item / checkbox
         para.append(t)                                     # soft-wrapped lines join
