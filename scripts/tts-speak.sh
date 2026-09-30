@@ -122,7 +122,8 @@ else
     # after a blank line, become one "Code block on screen." each.
     awk 'BEGIN { blank = 1; list = -1 }
          { t=$0; sub(/^([[:space:]]*>)*[[:space:]]*/, "", t)    # t: the line without indent or > quote marks
-           l=$0; gsub(/\t/, "    ", l); match(l, /^ */); ind = RLENGTH }
+           l=$0; if (l ~ /^[[:space:]]*>/) sub(/^([[:space:]]*>[[:space:]]?)+/, "", l)   # l: without > quote marks
+           gsub(/\t/, "    ", l); match(l, /^ */); ind = RLENGTH }
          !f && match(t, /^(```+|~~~+)/) { f=substr(t,1,RLENGTH); print "Code block on screen."; code=0; next }
          f { c=t; sub(/[[:space:]]+$/, "", c)
              if (substr(c,1,1) == substr(f,1,1) && c ~ /^(`+|~+)$/ && length(c) >= length(f)) f=""

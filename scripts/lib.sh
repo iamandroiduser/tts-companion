@@ -194,18 +194,33 @@ tts_lock() {
     if mkdir "$dir" 2>/dev/null; then echo "$TTS_SELF" > "$dir/pid"; return 0; fi
     if tts_lock_is_stale "$dir" "$stale"; then
       if mkdir "$dir.reclaim" 2>/dev/null; then
+        echo "$TTS_SELF" > "$dir.reclaim/pid"
         tts_lock_is_stale "$dir" "$stale" && rm -rf "$dir"
         if mkdir "$dir" 2>/dev/null; then                 # take it while still holding .reclaim
-          echo "$TTS_SELF" > "$dir/pid"; rmdir "$dir.reclaim" 2>/dev/null; return 0
+          echo "$TTS_SELF" > "$dir/pid"; tts_unlock "$dir.reclaim"; return 0
         fi
-        rmdir "$dir.reclaim" 2>/dev/null
+        tts_unlock "$dir.reclaim"
+      else
+        tts_clear_dead_mutex "$dir.reclaim"               # a reclaimer that died mid-way
       fi
-      # a reclaimer that died mid-way leaves DIR.reclaim behind
-      [[ -n "$(find "$dir.reclaim" -prune -mmin +1 2>/dev/null)" ]] && rmdir "$dir.reclaim" 2>/dev/null
     fi
     sleep 0.05
   done
   return 1
+}
+# Remove a DIR.reclaim mutex only if its owner is gone (or it recorded none within
+# a minute), never a live owner's. It is renamed aside first and re-checked there,
+# so a mutex someone else has just created in its place is never deleted.
+tts_clear_dead_mutex() {
+  local m="$1" aside
+  tts_lock_is_stale "$m" 1 || return 0
+  aside="$m.dead.$$.$RANDOM"
+  mv "$m" "$aside" 2>/dev/null || return 0
+  if tts_lock_is_stale "$aside" 1; then
+    rm -rf "$aside"
+  else
+    mv "$aside" "$m" 2>/dev/null || rm -rf "$aside"   # not dead after all: put it back
+  fi
 }
 tts_lock_is_stale() {
   local owner
@@ -239,12 +254,21 @@ tts_current_pid() {
 # Send a signal to a speaking run and its engine/player processes.
 # The run is paused with SIGSTOP, so SIGCONT follows SIGTERM or it would never die.
 # shellcheck disable=SC2086  # $kids is a whitespace-separated pid list
+# The run's jobs each have their own process group (tts-speak.sh uses set -m), so
+# pause and resume signal those whole groups too: a player started between our
+# listing and the signal is in its job's group and is paused with it.
 tts_signal() {
-  local sig="$1" pid="$2" kids
+  local sig="$1" pid="$2" kids groups own g
+  [[ "$sig" == STOP ]] && kill -STOP "$pid" 2>/dev/null   # first, so it starts nothing new
   kids=$(tts_descendants "$pid")
+  own=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+  groups=$(for k in $kids; do ps -o pgid= -p "$k" 2>/dev/null; done | tr -d ' ' | sort -u)
+  for g in $groups; do                                   # never the group the script itself is in
+    [[ -n "$g" && "$g" != "$own" && "$g" != 0 && "$g" != 1 ]] && kill -"$sig" -- "-$g" 2>/dev/null
+  done
   case "$sig" in
     TERM) kill -TERM "$pid" $kids 2>/dev/null; kill -CONT "$pid" $kids 2>/dev/null ;;
-    STOP) kill -STOP $kids "$pid" 2>/dev/null ;;   # players first, then the script
+    STOP) kill -STOP $kids 2>/dev/null ;;
     CONT) kill -CONT "$pid" $kids 2>/dev/null ;;
   esac
 }

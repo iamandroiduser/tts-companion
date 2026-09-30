@@ -303,9 +303,9 @@ def speak_inline(line, hard=None):
 # ------------------------------------------------------------ block pass
 def is_table_row(line):
     """A line that continues a table: it has a | and doesn't start a new block
-    (heading, quote, list item, fence), so text after the table stays prose."""
+    (heading, quote, list item, fence, HTML), so text after the table stays prose."""
     t = line.strip()
-    return bool(t) and "|" in t and not re.match(r"(#{1,6}\s|>|[-*+]\s|\d+[.)]\s|```|~~~)", t)
+    return bool(t) and "|" in t and not re.match(r"(#{1,6}\s|>|[-*+]\s|\d+[.)]\s|```|~~~|</?[A-Za-z!])", t)
 
 
 def is_diagram_line(line):
@@ -439,6 +439,16 @@ def speechify(md, blocks=None):
         t = line.strip()
         if t and width(line) == 0 and not re.match(r"^([-*+]|\d+[.)])\s", t):
             list_indent = None
+        if t.startswith(">") and not para and unquote(line).strip() and width(unquote(line)) >= 4:
+            start, end = i, i                              # indented code inside a > quote
+            while end < len(lines) and lines[end].lstrip().startswith(">") and (
+                    width(unquote(lines[end])) >= 4 or not unquote(lines[end]).strip()):
+                end += 1
+            while end > start and not unquote(lines[end - 1]).strip():
+                end -= 1
+            i = end
+            cue("Code block on screen.", "code (unknown language)", [unquote(b) for b in lines[start:end]])
+            continue
         code_col = (list_indent or 0) + 4
         if t and width(line) >= code_col and not para:   # indented code block
             start, end = i, i
@@ -498,12 +508,19 @@ def speechify(md, blocks=None):
                     f"code ({lang or 'unknown language'})", body)
             continue
         if t.startswith("$$") and "$$" not in t[2:]:       # display math spanning lines
-            body = [t[2:]]
-            while not body[-1].rstrip().endswith("$$") and i + 1 < len(lines):
-                i += 1
-                body.append(lines[i].strip())
-            i += 1
-            text = " ".join(body).replace("$$", "").strip()
+            body, j = [t[2:]], i + 1
+            while j < len(lines) and "$$" not in lines[j]:
+                body.append(lines[j].strip())
+                j += 1
+            if j < len(lines):                            # the closing $$: text after it is prose
+                k = lines[j].index("$$")
+                body.append(lines[j][:k].strip())
+                rest = lines[j][k + 2:]
+                lines[j] = rest
+                i = j if rest.strip() else j + 1
+            else:
+                i = j
+            text = " ".join(body).strip()
             if len(text) <= 150:
                 emit(end_sentence(speak_math(text)))
             else:
@@ -543,7 +560,7 @@ def speechify(md, blocks=None):
                 continue
             # a single symbol-heavy line such as "a -> b" is ordinary text: speak it
         i += 1
-        if not t or re.fullmatch(r"[-*_=]{3,}", t):
+        if not t or re.fullmatch(r"[-*_=]{3,}|(>\s*)+", t):   # blank (also a blank quote line) or a rule
             flush()                                        # paragraph break
             continue
         heading = re.match(r"^#{1,6}\s", t)
